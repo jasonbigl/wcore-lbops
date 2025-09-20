@@ -38,7 +38,7 @@ class Route53 extends Abs
             'http' => [
                 'connect_timeout' => 5,
                 'timeout' => 15,
-                'verify' => false, //Disable SSL/TLS verification
+                'verify' => true, // Enable SSL/TLS verification for security
             ],
             'retries' => 3,
             'region' => 'us-east-1',
@@ -270,7 +270,7 @@ class Route53 extends Abs
                 'http' => [
                     'connect_timeout' => 5,
                     'timeout' => 15,
-                    'verify' => false, //Disable SSL/TLS verification
+                    'verify' => true, // Enable SSL/TLS verification for security
                 ],
                 'retries' => 3,
                 'region' => $region,
@@ -378,7 +378,7 @@ class Route53 extends Abs
             'http' => [
                 'connect_timeout' => 5,
                 'timeout' => 15,
-                'verify' => false, //Disable SSL/TLS verification
+                'verify' => true, // Enable SSL/TLS verification for security
             ],
             'retries' => 3,
             'region' => $region,

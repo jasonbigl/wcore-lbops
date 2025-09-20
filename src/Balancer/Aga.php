@@ -38,7 +38,7 @@ class Aga extends Abs
             'http' => [
                 'connect_timeout' => 5,
                 'timeout' => 15,
-                'verify' => false, //Disable SSL/TLS verification
+                'verify' => true, // Enable SSL/TLS verification for security
             ],
             'retries' => 3,
             'region' => 'us-west-2',
@@ -265,7 +265,7 @@ class Aga extends Abs
                     'http' => [
                         'connect_timeout' => 5,
                         'timeout' => 15,
-                        'verify' => false, //Disable SSL/TLS verification
+                        'verify' => true, // Enable SSL/TLS verification for security
                     ],
                     'retries' => 3,
                     'region' => $region,
@@ -379,7 +379,7 @@ class Aga extends Abs
                 'http' => [
                     'connect_timeout' => 5,
                     'timeout' => 15,
-                    'verify' => false, //Disable SSL/TLS verification
+                    'verify' => true, // Enable SSL/TLS verification for security
                 ],
                 'retries' => 3,
                 'region' => $region,

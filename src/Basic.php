@@ -117,7 +117,7 @@ class Basic
             'http' => [
                 'connect_timeout' => 5,
                 'timeout' => 15,
-                'verify' => false, //Disable SSL/TLS verification
+                'verify' => true, // Enable SSL/TLS verification for security
             ],
             'retries' => 3,
             'version' => 'latest',
@@ -146,7 +146,7 @@ class Basic
         $instanceId = $instance['InstanceId'];
 
         $ret = $this->waitInstanceReady($region, $instanceId);
-        if (!$ret) {
+        if (!$ret['suc']) {
             return [
                 'suc' => false,
                 'msg' => "Failed to wait instance ready, instance id: {$instanceId}",
@@ -338,9 +338,16 @@ STRING;
             ];
         }
 
+        if (empty($ret['Reservations']) || empty($ret['Reservations'][0]['Instances'])) {
+            return [
+                'suc' => false,
+                'msg' => "No instance found with the given ID",
+            ];
+        }
+
         return [
             'suc' => true,
-            'data' => $ret['Reservations'][0]['Instances'][0] ?? [],
+            'data' => $ret['Reservations'][0]['Instances'][0],
         ];
     }
 
@@ -618,9 +625,16 @@ STRING;
             ];
         }
 
+        if (empty($ret['Reservations']) || empty($ret['Reservations'][0]['Instances'])) {
+            return [
+                'suc' => false,
+                'msg' => "No instance found with the given IP",
+            ];
+        }
+
         return [
             'suc' => true,
-            'data' => $ret['Reservations'][0]['Instances'][0] ?? [],
+            'data' => $ret['Reservations'][0]['Instances'][0],
         ];
     }
 
@@ -990,7 +1004,7 @@ STRING;
             'http' => [
                 'connect_timeout' => 5,
                 'timeout' => 15,
-                'verify' => false, //Disable SSL/TLS verification
+                'verify' => true, // Enable SSL/TLS verification for security
             ],
             'retries' => 3,
             'version' => '2019-09-27',
