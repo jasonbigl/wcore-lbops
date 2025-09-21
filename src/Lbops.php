@@ -1061,12 +1061,13 @@ class Lbops extends Basic
                 }
             }
 
-            $ret = $this->route53->updateTags();
-            if (!$ret['suc']) {
-                Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
-                $this->unlockOp();
-                return $ret;
-            }
+            //route 53的ip没有变动，无需更新tags
+            // $ret = $this->route53->updateTags();
+            // if (!$ret['suc']) {
+            //     Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
+            //     $this->unlockOp();
+            //     return $ret;
+            // }
         }
 
         if ($this->config['aga_arns']) {
@@ -1266,12 +1267,13 @@ class Lbops extends Basic
                 }
             }
 
-            $ret = $this->route53->updateTags();
-            if (!$ret['suc']) {
-                Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
-                $this->unlockOp();
-                return $ret;
-            }
+            //route 53的ip没有变动，无需更新tags
+            // $ret = $this->route53->updateTags();
+            // if (!$ret['suc']) {
+            //     Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
+            //     $this->unlockOp();
+            //     return $ret;
+            // }
         }
 
         if ($this->config['aga_arns']) {
@@ -1771,7 +1773,7 @@ STRING;
                         //缩容成功
                         file_put_contents($scaleSmallFlagFile, time());
 
-                        Log::info("Scale down succeeded, msg: {$ret['msg']}");
+                        Log::info("Scale down succeeded");
                         $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
 <p>Scale down succeeded<p>
@@ -1802,7 +1804,7 @@ STRING;
 
                         file_put_contents($scaleSmallFlagFile, time());
 
-                        Log::info("Scale in succeeded, msg: {$ret['msg']}");
+                        Log::info("Scale in succeeded, msg");
                         $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
 <p>Scale in succeeded<p>
