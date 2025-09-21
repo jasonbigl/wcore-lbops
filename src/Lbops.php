@@ -108,8 +108,8 @@ class Lbops extends Basic
                 //部署并等待app完成
                 $ret = $this->launchNode($region, $version, $insType);
                 if (!$ret['suc']) {
-                    Log::error("Failed to deploy server in {$region}, msg: {$ret['msg']}");
-                    continue;
+                    $this->unlockOp();
+                    return $ret;
                 }
 
                 Log::info("end launching #{$i} server in {$region}");
@@ -132,7 +132,8 @@ class Lbops extends Basic
             $ret = $this->waitAppReady($ipv4List);
             if (!$ret['suc']) {
                 Log::error("Failed to wait app ready in {$region}, msg: {$ret['msg']}");
-                continue;
+                $this->unlockOp();
+                return $ret;
             }
 
             //将新启动的ec2部署到route53中
@@ -141,6 +142,8 @@ class Lbops extends Basic
                 $ret = $this->route53->getNodesByRegion($region, true);
                 if (!$ret['suc']) {
                     Log::error("Failed to get nodes by region from route53, msg: {$ret['msg']}");
+                    $this->unlockOp();
+                    return $ret;
                 }
 
                 $regionNodes = $ret['data'] ?? [];
@@ -178,12 +181,16 @@ class Lbops extends Basic
                     $ret = $this->route53->replaceNodes($region, $newIpList);
                     if (!$ret['suc']) {
                         Log::error("Failed to replace nodes in {$region}, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
 
                     //更改了node才更新date time
                     $ret = $this->route53->updateTags($version);
                     if (!$ret['suc']) {
                         Log::error("Failed to update tags in {$region}, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
                 } else {
                     //直接用旧的eip重新关联ec2即可，无需更改route53
@@ -192,21 +199,37 @@ class Lbops extends Basic
                         $oldEIP = $rnode['ipv4'];
                         $newInsId = $insList[$idx] ?? null;
                         if (!$newInsId) {
-                            Log::error("can not get new instance id according to route53 and inslist, region nodes: " . json_encode($regionNodes, JSON_UNESCAPED_SLASHES) . ', insList: ' . json_encode($insList, JSON_UNESCAPED_SLASHES) . ', idx: ' . $idx);
-                            continue;
+                            $errorMessage = "can not get new instance id according to route53 and inslist, region nodes: " . json_encode($regionNodes, JSON_UNESCAPED_SLASHES) . ', insList: ' . json_encode($insList, JSON_UNESCAPED_SLASHES) . ', idx: ' . $idx;
+                            Log::error($errorMessage);
+                            $this->unlockOp();
+                            return [
+                                'suc' => false,
+                                'msg' => $errorMessage
+                            ];
                         }
                         $newInsId = $newInsId['ins_id'];
 
                         $ret = $this->getAllocateID($region, $oldEIP);
                         if (!$ret['suc']) {
-                            Log::error("Failed to get allocate id from EIP {$oldEIP}, msg: {$ret['msg']}");
-                            continue;
+                            $errorMessage = "Failed to get allocate id from EIP {$oldEIP}, msg: {$ret['msg']}";
+                            Log::error($errorMessage);
+                            $this->unlockOp();
+                            return [
+                                'suc' => false,
+                                'msg' => $errorMessage
+                            ];
                         }
 
                         //关联新机器
                         $ret = $this->associateEIP($region, $newInsId, $ret['data']['allocate_id']);
                         if (!$ret['suc']) {
-                            Log::error("Failed to associate EIP {$oldEIP} with instance {$newInsId}, msg: {$ret['msg']}");
+                            $errorMessage = "Failed to associate EIP {$oldEIP} with instance {$newInsId}, msg: {$ret['msg']}";
+                            Log::error($errorMessage);
+                            $this->unlockOp();
+                            return [
+                                'suc' => false,
+                                'msg' => $errorMessage
+                            ];
                         }
                     }
                 }
@@ -220,6 +243,8 @@ class Lbops extends Basic
                     $ret = $this->aga->listListenerArns($agaArn);
                     if (!$ret['suc']) {
                         Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
 
                     $agaListeners = $ret['data'] ?? [];
@@ -229,6 +254,8 @@ class Lbops extends Basic
                     $ret = $this->aga->addEndpoints($agaListenerArn, $region, $insIdList);
                     if (!$ret['suc']) {
                         Log::error("Failed to add endpoints to aga, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
                 }
             }
@@ -244,6 +271,8 @@ class Lbops extends Basic
                     $ret = $this->aga->listListenerArns($agaArn);
                     if (!$ret['suc']) {
                         Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
 
                     $agaListeners = $ret['data'] ?? [];
@@ -253,12 +282,16 @@ class Lbops extends Basic
                     $ret = $this->aga->waitEndpointsHealthy($agaListenerArn, $region, $insIdList);
                     if (!$ret['suc']) {
                         Log::error("Failed to wait endpoints healthy in aga, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
 
                     //3.将endpoint启用，weight改成128
                     $ret = $this->aga->enableEndpoints($agaListenerArn, $region, $insIdList);
                     if (!$ret['suc']) {
                         Log::error("Failed to enable endpoints in aga, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
                 }
             }
@@ -271,13 +304,16 @@ class Lbops extends Basic
                 $ret = $this->aga->waitAgaDeployed($agaArn);
                 if (!$ret['suc']) {
                     Log::error("Failed to wait aga deployed, msg: {$ret['msg']}");
-                    continue;
+                    $this->unlockOp();
+                    return $ret;
                 }
 
                 //找到第一个listener
                 $ret = $this->aga->listListenerArns($agaArn);
                 if (!$ret['suc']) {
                     Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
+                    $this->unlockOp();
+                    return $ret;
                 }
 
                 $agaListeners = $ret['data'] ?? [];
@@ -291,6 +327,8 @@ class Lbops extends Basic
                     $ret = $this->aga->findEndpointGroupByRegion($agaListenerArn, $region);
                     if (!$ret['suc']) {
                         Log::error("Failed to find endpoint group by region from aga, msg: {$ret['msg']}");
+                        $this->unlockOp();
+                        return $ret;
                     }
 
                     $epgInfo = $ret['data'];
@@ -308,7 +346,11 @@ class Lbops extends Basic
                     } catch (\Exception $e) {
                         $errorMessage = "Failed to update endpoint group: {$e->getMessage()}";
                         Log::error($errorMessage);
-                        continue;
+                        $this->unlockOp();
+                        return [
+                            'suc' => false,
+                            'msg' => $errorMessage
+                        ];
                     }
 
                     Log::info("old endpoints removed in {$region}, remaining: " . implode(',', $insIdList));
@@ -320,6 +362,8 @@ class Lbops extends Basic
         $ret = $this->aga->updateTags($version);
         if (!$ret['suc']) {
             Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
+            $this->unlockOp();
+            return $ret;
         }
 
         $timeUsed = time() - $startTime;
@@ -450,9 +494,15 @@ class Lbops extends Basic
                 }
 
                 if ($cleanEIPs) {
-                    $ret = $this->cleanEIPs($region, $cleanEIPs);
+                    //清理之前再次确定是否有其他操作在进行
+                    $ret = $this->opLockedBy("clean");
                     if (!$ret['suc']) {
-                        Log::error("Failed to clean eips in {$region}, msg: {$ret['msg']}");
+                        Log::error("Op is locked by another operation, skip clean eips, msg: {$ret['msg']}");
+                    } else {
+                        $ret = $this->cleanEIPs($region, $cleanEIPs);
+                        if (!$ret['suc']) {
+                            Log::error("Failed to clean eips in {$region}, msg: {$ret['msg']}");
+                        }
                     }
                 }
             }
@@ -507,9 +557,15 @@ class Lbops extends Basic
                 }
 
                 if ($cleanInsIds) {
-                    $ret = $this->cleanInstances($region, $cleanInsIds);
+                    //清理之前再次确定是否有其他操作正在进行
+                    $ret = $this->opLockedBy("clean");
                     if (!$ret['suc']) {
-                        Log::error("Failed to clean instances in {$region}, msg: {$ret['msg']}");
+                        Log::error("Op is locked by another operation, skip clean instances, msg: {$ret['msg']}");
+                    } else {
+                        $ret = $this->cleanInstances($region, $cleanInsIds);
+                        if (!$ret['suc']) {
+                            Log::error("Failed to clean instances in {$region}, msg: {$ret['msg']}");
+                        }
                     }
                 }
             }
@@ -1266,13 +1322,13 @@ class Lbops extends Basic
         // Process all regions concurrently
         foreach ($regionNodes as $region => $nodeList) {
             Log::info("Starting concurrent health check for region {$region} with " . count($nodeList) . " nodes");
-            
+
             $unhealthyNodes = $this->performConcurrentHealthChecks(
-                $nodeList, 
-                $region, 
-                $healthCheckDomain, 
-                $intervalS, 
-                $failThreshold, 
+                $nodeList,
+                $region,
+                $healthCheckDomain,
+                $intervalS,
+                $failThreshold,
                 $maxCheckAttempts
             );
 
@@ -1319,7 +1375,7 @@ class Lbops extends Basic
     private function performConcurrentHealthChecks($nodeList, $region, $healthCheckDomain, $intervalS, $failThreshold, $maxCheckAttempts)
     {
         $unhealthyNodes = [];
-        
+
         // 为每个节点初始化健康状态跟踪
         $nodeHealthStatus = [];
         foreach ($nodeList as $node) {
@@ -1334,9 +1390,9 @@ class Lbops extends Basic
         // 执行多轮检查直到达到最大尝试次数或失败阈值
         for ($round = 0; $round < $maxCheckAttempts; $round++) {
             $startRoundTime = time();
-            
+
             // 只检查还未被判定为不健康的节点
-            $activeNodes = array_filter($nodeHealthStatus, function($status) {
+            $activeNodes = array_filter($nodeHealthStatus, function ($status) {
                 return !$status['isUnhealthy'];
             });
 
@@ -1352,7 +1408,7 @@ class Lbops extends Basic
             // 更新节点健康状态
             foreach ($roundResults as $nodeIp => $result) {
                 $nodeHealthStatus[$nodeIp]['checkAttempts']++;
-                
+
                 if (!$result['success'] || $result['httpCode'] !== 200) {
                     $nodeHealthStatus[$nodeIp]['unHealthyCount']++;
                 }
@@ -1361,11 +1417,11 @@ class Lbops extends Basic
                 if ($nodeHealthStatus[$nodeIp]['unHealthyCount'] >= $failThreshold) {
                     $nodeHealthStatus[$nodeIp]['isUnhealthy'] = true;
                     $node = $nodeHealthStatus[$nodeIp]['node'];
-                    
+
                     Log::error("Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region} - failed {$nodeHealthStatus[$nodeIp]['unHealthyCount']} times");
-                    
+
                     $unhealthyNodes[] = "Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region}";
-                    
+
                     // 找到一个不健康的节点就停止检查该区域（与原逻辑保持一致）
                     return $unhealthyNodes;
                 }
@@ -1400,7 +1456,7 @@ class Lbops extends Basic
         // 为每个节点创建 cURL 句柄
         foreach ($activeNodes as $nodeIp => $nodeStatus) {
             $ch = curl_init($this->config['health_check_url']);
-            
+
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => false,
@@ -1429,7 +1485,7 @@ class Lbops extends Basic
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $error = curl_error($ch);
             $errno = curl_errno($ch);
-            
+
             $results[$nodeIp] = [
                 'success' => ($errno === 0 && empty($error)),
                 'httpCode' => $httpCode,
@@ -1471,7 +1527,7 @@ class Lbops extends Basic
                 }
                 $allNodes = $ret['data'] ?? [];
             }
-            
+
             // 使用第一个区域的节点进行测试
             $testNodes = reset($allNodes) ?: [];
             if (empty($testNodes)) {
@@ -1481,7 +1537,7 @@ class Lbops extends Basic
 
         $healthCheckParts = parse_url($this->config['health_check_url']);
         $healthCheckDomain = $healthCheckParts['host'];
-        
+
         $results = [
             'node_count' => count($testNodes),
             'iterations' => $iterations,
@@ -1495,7 +1551,7 @@ class Lbops extends Basic
         // 测试并发版本性能
         for ($i = 0; $i < $iterations; $i++) {
             $startTime = microtime(true);
-            
+
             $activeNodes = [];
             foreach ($testNodes as $node) {
                 $activeNodes[$node['ipv4']] = [
@@ -1505,17 +1561,17 @@ class Lbops extends Basic
                     'isUnhealthy' => false
                 ];
             }
-            
+
             $this->executeConcurrentHealthCheck($activeNodes, $healthCheckDomain);
-            
+
             $concurrentTime = microtime(true) - $startTime;
             $results['concurrent_times'][] = $concurrentTime;
-            
+
             Log::info("Concurrent check iteration " . ($i + 1) . " completed in " . round($concurrentTime, 3) . "s");
         }
 
         $results['concurrent_avg'] = array_sum($results['concurrent_times']) / count($results['concurrent_times']);
-        
+
         Log::info("Benchmark completed. Average concurrent time: " . round($results['concurrent_avg'], 3) . "s");
         Log::info("Estimated old serial time would be: ~" . round($results['concurrent_avg'] * count($testNodes), 1) . "s");
         Log::info("Performance improvement: ~" . round(count($testNodes), 1) . "x faster");

@@ -141,7 +141,7 @@ class Basic
             return $ret;
         }
 
-        $instance = $ret['instance'];
+        $instance = $ret['data'];
 
         $instanceId = $instance['InstanceId'];
 
@@ -157,7 +157,7 @@ class Basic
         if (!$ret['suc']) {
             return $ret;
         }
-        $instanceInfo = $ret['instance'];
+        $instanceInfo = $ret['data'];
         $ipv4 = $instanceInfo['PublicIpAddress'];
         $ipv6 = $instanceInfo['Ipv6Address'];
 
