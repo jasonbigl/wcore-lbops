@@ -137,7 +137,7 @@ class Route53 extends Abs
         if (!$lastChangeTime) {
             return [
                 'suc' => true,
-                'data' => '',
+                'data' => 0,
             ];
         }
 

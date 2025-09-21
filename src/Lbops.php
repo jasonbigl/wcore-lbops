@@ -221,7 +221,8 @@ class Lbops extends Basic
                         }
 
                         //关联新机器
-                        $ret = $this->associateEIP($region, $newInsId, $ret['data']['allocate_id']);
+                        $allocateId = $ret['data'];
+                        $ret = $this->associateEIP($region, $newInsId, $allocateId);
                         if (!$ret['suc']) {
                             $errorMessage = "Failed to associate EIP {$oldEIP} with instance {$newInsId}, msg: {$ret['msg']}";
                             Log::error($errorMessage);
@@ -356,14 +357,14 @@ class Lbops extends Basic
                     Log::info("old endpoints removed in {$region}, remaining: " . implode(',', $insIdList));
                 }
             }
-        }
 
-        //update tag
-        $ret = $this->aga->updateTags($version);
-        if (!$ret['suc']) {
-            Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
-            $this->unlockOp();
-            return $ret;
+            //update tag
+            $ret = $this->aga->updateTags($version);
+            if (!$ret['suc']) {
+                Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
+                $this->unlockOp();
+                return $ret;
+            }
         }
 
         $timeUsed = time() - $startTime;
@@ -377,7 +378,7 @@ class Lbops extends Basic
      *
      * @return void
      */
-    public function clean($minAliveSeconds = 2400, $exceptIpList = [], $exceptInsidList = [])
+    public function clean($minAliveSeconds = 1800, $exceptIpList = [], $exceptInsidList = [])
     {
         $ret = $this->canDoOp('clean');
         if (!$ret['suc']) {
@@ -386,6 +387,27 @@ class Lbops extends Basic
 
         Log::info("start clean module `{$this->config['module']}`");
         sleep(5);
+
+        //aga或者route53更改的时间，具体他们更改的时间必须大于minAliveSeconds才能清理
+        $lbLastChangeTime = 0;
+        if ($this->config['aga_arns']) {
+            $ret = $this->aga->getLastChangeDateTime();
+            if (!$ret['suc']) {
+                Log::error("Failed to get last change time from aga, msg: {$ret['msg']}");
+            }
+            $agaLastChangeTime = $ret['data'];
+            $agaLastChangeTime = \DateTime::createFromFormat('Y-m-d H:i:s', $agaLastChangeTime, new \DateTimeZone('Asia/Shanghai'))->getTimestamp();
+            $lbLastChangeTime = max($lbLastChangeTime, $agaLastChangeTime);
+        }
+        if ($this->config['r53_zones']) {
+            $ret = $this->route53->getLastChangeDateTime();
+            if (!$ret['suc']) {
+                Log::error("Failed to get last change time from route53, msg: {$ret['msg']}");
+            }
+            $r53LastChangeTime = $ret['data'];
+            $r53LastChangeTime = \DateTime::createFromFormat('Y-m-d H:i:s', $r53LastChangeTime, new \DateTimeZone('Asia/Shanghai'))->getTimestamp();
+            $lbLastChangeTime = max($lbLastChangeTime, $r53LastChangeTime);
+        }
 
         //按地区清理
         foreach ($this->config['regions'] as $region) {
@@ -477,7 +499,7 @@ class Lbops extends Basic
                     $eipLastChangeTs = 0;
                     foreach ($tags as $tag) {
                         if ($tag['Key'] == "Last Change DateTime") {
-                            $eipLastChangeTs = \DateTime::createFromFormat('Y-m-d H:i:s', $tag['Value'], new \DateTimeZone('Asia/Shanghai'))->getTimestamp();;
+                            $eipLastChangeTs = \DateTime::createFromFormat('Y-m-d H:i:s', $tag['Value'], new \DateTimeZone('Asia/Shanghai'))->getTimestamp();
                             break;
                         }
                     }
@@ -486,8 +508,8 @@ class Lbops extends Basic
                         !in_array($eipAddr['PublicIp'], $agaResvIps)
                         && !in_array($eipAddr['PublicIp'], $r53ResvIps)
                         && !in_array($eipAddr['PublicIp'], $exceptIpList)
-                        && $eipLastChangeTs > 0
-                        && time() - $eipLastChangeTs > $minAliveSeconds
+                        && time() - $eipLastChangeTs > 300 // 机器最多指需要5分钟，避免清理正在发布的机器
+                        && time() - $lbLastChangeTime > $minAliveSeconds //距离lb (route53或者aga)的更改时间必须大于minAliveSeconds才能清理
                     ) {
                         $cleanEIPs[] = $eipAddr['PublicIp'];
                     }
@@ -540,7 +562,7 @@ class Lbops extends Basic
                         $ec2LastChangeTs = 0;
                         foreach ($tags as $tag) {
                             if ($tag['Key'] == "Last Change DateTime") {
-                                $ec2LastChangeTs = \DateTime::createFromFormat('Y-m-d H:i:s', $tag['Value'], new \DateTimeZone('Asia/Shanghai'))->getTimestamp();;
+                                $ec2LastChangeTs = \DateTime::createFromFormat('Y-m-d H:i:s', $tag['Value'], new \DateTimeZone('Asia/Shanghai'))->getTimestamp();
                                 break;
                             }
                         }
@@ -549,8 +571,8 @@ class Lbops extends Basic
                             !in_array($ins['InstanceId'], $agaResvInsIds)
                             && !in_array($ins['InstanceId'], $r53ResvInsIds)
                             && !in_array($ins['InstanceId'], $exceptInsidList)
-                            && $ec2LastChangeTs > 0
-                            && time() - $ec2LastChangeTs > $minAliveSeconds
+                            && time() - $ec2LastChangeTs > 300 // 机器最多指需要5分钟，避免清理正在发布的机器
+                            && time() - $lbLastChangeTime > $minAliveSeconds //距离lb (route53或者aga)的更改时间必须大于minAliveSeconds才能清理
                         )
                             $cleanInsIds[] = $ins['InstanceId'];
                     }
@@ -776,7 +798,8 @@ class Lbops extends Basic
         //删除，需要统一删除，保持route53个aga的一致性
         $removedNodes = [];
         for ($i = 1; $i <= $amount; $i++) {
-            $removeKey = array_rand($nodesList);
+            //nodelist最新的在最前面，有限删除最老的机器
+            $removeKey = array_key_last($nodesList);
             $removedNodes[] = $nodesList[$removeKey];
             unset($nodesList[$removeKey]);
         }
@@ -1029,7 +1052,7 @@ class Lbops extends Basic
                 }
 
                 //关联新机器
-                $allocateId = $ret['data']['allocate_id'];
+                $allocateId = $ret['data'];
                 $ret = $this->associateEIP($region, $newInsId, $allocateId);
                 if (!$ret['suc']) {
                     Log::error("Failed to associate EIP {$oldEIP} with instance {$newInsId}, msg: {$ret['msg']}");
@@ -1230,7 +1253,7 @@ class Lbops extends Basic
                 }
 
                 //关联新机器
-                $allocateId = $ret['data']['allocate_id'];
+                $allocateId = $ret['data'];
                 $ret = $this->associateEIP($region, $newInsId, $allocateId);
                 if (!$ret['suc']) {
                     $errorMessage = "Failed to associate EIP {$oldEIP} with instance {$newInsId}";
@@ -1349,7 +1372,7 @@ class Lbops extends Basic
                     $this->sendAlarmEmail('Unhealthy nodes, scale up failed', $content);
                 } else {
                     //扩容成功
-                    Log::info("Scale up successfully, msg: {$ret['msg']}");
+                    Log::info("Scale up successfully");
                     $content = implode('', $nodeContent) . "<p>Scale up succeeded<p>";
                     $this->sendAlarmEmail('Unhealthy nodes, scale up succeeded', $content);
                 }

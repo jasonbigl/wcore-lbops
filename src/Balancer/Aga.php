@@ -131,7 +131,7 @@ class Aga extends Abs
         if (!$lastChangeTime) {
             return [
                 'suc' => true,
-                'data' => '',
+                'data' => 0,
             ];
         }
 

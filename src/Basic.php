@@ -359,9 +359,7 @@ STRING;
      */
     public function waitAppReady($ipList)
     {
-        Log::info("waiting app to be ready, ips: " . implode(',', $ipList));
-
-        $startTime = time();
+        Log::info("waiting app ready, ips: " . implode(',', $ipList));
 
         $maxAttempts = 30;
 
@@ -378,7 +376,7 @@ STRING;
 
         //启动完成的nodes
         $readyNodes = [];
-
+        $errorMsgs = [];
         foreach ($ipList as $ip) {
             $checkAttempts = 0;
 
@@ -401,8 +399,9 @@ STRING;
                 try {
                     $body = curl_exec($ch);
                 } catch (\Exception $e) {
-                    $chInfo = curl_getinfo($ch);
                     curl_close($ch);
+
+                    $errorMsgs[$ip] = "Failed to execute health check request, exception: {$e->getMessage()}";
 
                     sleep(5);
 
@@ -412,8 +411,11 @@ STRING;
                 //有错误产生
                 $errNo = curl_errno($ch);
                 if ($errNo) {
-                    $chInfo = curl_getinfo($ch);
+                    $errMsg = curl_error($ch);
+
                     curl_close($ch);
+
+                    $errorMsgs[$ip] = "Failed to execute health check request, error msg: {$errMsg}, error no: {$errNo}";
 
                     sleep(5);
 
@@ -421,7 +423,6 @@ STRING;
                 }
 
                 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                $chInfo = curl_getinfo($ch);
                 curl_close($ch);
 
                 if ($httpCode === 200) {
@@ -433,12 +434,14 @@ STRING;
                     break;
                 }
 
+                $errorMsgs[$ip] = "Health check http code: {$httpCode}";
+
                 sleep(5);
             } while ($checkAttempts <= $maxAttempts);
         }
 
         if (count($readyNodes) != count($ipList)) {
-            $errorMessage = "app in instances is not ready after {$maxAttempts} checks, ready nodes: " . implode(',', $readyNodes) . ", all nodes:" . implode(',', $ipList);
+            $errorMessage = "app in instances is not ready after {$maxAttempts} checks, ready nodes: " . implode(',', $readyNodes) . "; all nodes:" . implode(',', $ipList) . "; error msgs: " . var_export($errorMsgs, true);
 
             Log::error($errorMessage);
 
@@ -447,10 +450,6 @@ STRING;
                 'msg' => $errorMessage,
             ];
         }
-
-        $timeUsed = time() - $startTime;
-
-        Log::info("app in instances {$ip} is ready, time used: {$timeUsed}s");
 
         return [
             'suc' => true,
@@ -859,7 +858,7 @@ STRING;
     {
         $regionNodes = [];
         if ($this->config['aga_arns']) {
-            $ret = $this->aga->getNodesByRegion($region);
+            $ret = $this->aga->getNodesByRegion($region, true);
             if (!$ret['suc']) {
                 Log::error("Failed to get nodes by region from aga, msg: {$ret['msg']}");
             }
@@ -868,7 +867,7 @@ STRING;
         }
 
         if (!$regionNodes && $this->config['r53_zones']) {
-            $ret = $this->route53->getNodesByRegion($region);
+            $ret = $this->route53->getNodesByRegion($region, true);
             if (!$ret['suc']) {
                 Log::error("Failed to get nodes by region from route53, msg: {$ret['msg']}");
             }
