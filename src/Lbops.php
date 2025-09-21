@@ -378,7 +378,7 @@ class Lbops extends Basic
      *
      * @return void
      */
-    public function clean($minAliveSeconds = 1800, $exceptIpList = [], $exceptInsidList = [])
+    public function clean($minAliveSeconds = 3600, $exceptIpList = [], $exceptInsidList = [])
     {
         $ret = $this->canDoOp('clean');
         if (!$ret['suc']) {
@@ -508,7 +508,7 @@ class Lbops extends Basic
                         !in_array($eipAddr['PublicIp'], $agaResvIps)
                         && !in_array($eipAddr['PublicIp'], $r53ResvIps)
                         && !in_array($eipAddr['PublicIp'], $exceptIpList)
-                        && time() - $eipLastChangeTs > 300 // 机器最多指需要5分钟，避免清理正在发布的机器
+                        && time() - $eipLastChangeTs > 600 // 机器最多只需要10分钟，避免清理正在发布的机器
                         && time() - $lbLastChangeTime > $minAliveSeconds //距离lb (route53或者aga)的更改时间必须大于minAliveSeconds才能清理
                     ) {
                         $cleanEIPs[] = $eipAddr['PublicIp'];
@@ -571,7 +571,7 @@ class Lbops extends Basic
                             !in_array($ins['InstanceId'], $agaResvInsIds)
                             && !in_array($ins['InstanceId'], $r53ResvInsIds)
                             && !in_array($ins['InstanceId'], $exceptInsidList)
-                            && time() - $ec2LastChangeTs > 300 // 机器最多指需要5分钟，避免清理正在发布的机器
+                            && time() - $ec2LastChangeTs > 600 // 机器最多只需要10分钟，避免清理正在发布的机器
                             && time() - $lbLastChangeTime > $minAliveSeconds //距离lb (route53或者aga)的更改时间必须大于minAliveSeconds才能清理
                         )
                             $cleanInsIds[] = $ins['InstanceId'];
@@ -959,6 +959,9 @@ class Lbops extends Basic
             if (!$ret['suc']) {
                 return $ret;
             }
+        } else {
+            //强制升级，不看锁，但是要锁住自身
+            $this->lockOp('scale-up');
         }
 
         //默认升级到最大的一个类型
