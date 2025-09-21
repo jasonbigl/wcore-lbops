@@ -1820,4 +1820,40 @@ STRING;
         //debug log
         //Log::info("end watching auto scale, time used: {$usedTime}s");
     }
+
+    /**
+     * exist in s3 or not
+     *
+     * @param [type] $bucket
+     * @param [type] $key
+     * @return array
+     */
+    function isExistS3($bucket, $key)
+    {
+        $s3Client = new \Aws\S3\S3Client([
+            'version' => 'latest',
+            'region' => 'us-east-1',
+            'credentials' => [
+                'key' => $this->config['aws_key'],
+                'secret' => $this->config['aws_secret'],
+            ],
+        ]);
+
+        // Check if the version file exists in S3
+        try {
+            $exists = $s3Client->doesObjectExist($bucket, $key);
+        } catch (\Exception $e) {
+            $errorMessage = "Failed to check S3 file existence: " . $e->getMessage();
+            Log::error($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage,
+            ];
+        }
+
+        return [
+            'suc' => true,
+            'data' => $exists,
+        ];
+    }
 }
