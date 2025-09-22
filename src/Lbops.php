@@ -1615,7 +1615,7 @@ class Lbops extends Basic
     public function autoScale($metricRegion, $metricFilter, $metricThreshold, $regionMinNodesAmount = [])
     {
         //debug log
-        //Log::info("start watching auto scale");
+        Log::info("start watching auto scale");
 
         $startTime = time();
 
@@ -1717,7 +1717,7 @@ class Lbops extends Basic
             $currentCPUAvg = $currentCPUTotal / $totalNodes;
 
             //debug log
-            //Log::info("nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%");
+            Log::info("nodes metrics in {$region}, current avg cpu: {$currentCPUAvg}%, low load nodes: {$lowLoadNodes}, total nodes: {$totalNodes}");
 
             $scaleUpFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-scale-up.flag";
             $lastScaleUpTime = file_exists($scaleUpFlagFile) ? file_get_contents($scaleUpFlagFile) : 0;
@@ -1831,7 +1831,7 @@ STRING;
         $usedTime = time() - $startTime;
 
         //debug log
-        //Log::info("end watching auto scale, time used: {$usedTime}s");
+        Log::info("end watching auto scale, time used: {$usedTime}s");
     }
 
     /**
