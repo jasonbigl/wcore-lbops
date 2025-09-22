@@ -1725,32 +1725,38 @@ class Lbops extends Basic
                 //大于thread的第二个值，扩容（要快），scale up, 需要距离上次扩容至少5分钟，方便新扩容的机器生效
                 Log::info("start scale up, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, nodes: {$totalNodes}, threshold: {$metricThreshold[1]}%");
 
-                $ret = $this->scaleUp($region);
+                file_put_contents($scaleUpFlagFile, time());
+
+                $startTime = time();
+                $ret = $this->scaleUp($region, true);
+                $usedTime = time() - $startTime;
+
                 if (!$ret['suc']) {
                     //扩容失败
-                    Log::error("Scale up failed, msg: {$ret['msg']}");
+                    Log::error("Scale up failed, msg: {$ret['msg']}, time used: {$usedTime}s");
 
                     $content = <<<STRING
 <p><strong>nodes in {$region} is on high load, current avg. cpu {$currentCPUAvg}%, total nodes: {$totalNodes}</strong><p>
-<p>Scale up failed, message: {$ret['msg']}<p>
+<p>Scale up failed, time used: {$usedTime}s, message: {$ret['msg']}<p>
 STRING;
                     $this->sendAlarmEmail("High cpu load {$currentCPUAvg}% in {$region}, scale up failed", $content);
                 } else {
                     //扩容成功
-                    Log::info("Scale up succeeded, msg: {$ret['msg']}");
-
-                    file_put_contents($scaleUpFlagFile, time());
+                    Log::info("Scale up succeeded, msg: {$ret['msg']}, time used: {$usedTime}s");
 
                     $content = <<<STRING
 <p><strong>nodes in {$region} is on high load, current avg. cpu {$currentCPUAvg}%, total nodes: {$totalNodes}</strong><p>
-<p>Scale up succeeded<p>
+<p>Scale up succeeded, time used: {$usedTime}s<p>
 STRING;
                     $this->sendAlarmEmail("High cpu load {$currentCPUAvg}% in {$region}, scale up succeeded", $content);
                 }
             }
 
-            if ($lowLoadNodes == $totalNodes) {
+            $lastScaleUpTime = file_exists($scaleUpFlagFile) ? file_get_contents($scaleUpFlagFile) : 0;
+
+            if ($lowLoadNodes == $totalNodes && time() - $lastScaleUpTime > 1800) {
                 //全部低负载，scale down or scale in 缩容（要慢）
+                //且距离上次扩容至少半小时，避免刚扩容就缩容
                 $ret = $this->getCurrentInstanceType();
                 $insType = $ret['data'] ?? '';
                 $smallestInsType = reset($this->verticalScaleInstypes);
@@ -1763,23 +1769,25 @@ STRING;
                     //不是最小的，缩容
                     Log::info("start scale down, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%");
 
+                    file_put_contents($scaleSmallFlagFile, time());
+
+                    $startTime = time();
                     $ret = $this->scaleDown($region);
+                    $usedTime = time() - $startTime;
                     if (!$ret['suc']) {
                         //缩容失败
-                        Log::error("Scale down failed, msg: {$ret['msg']}");
+                        Log::error("Scale down failed, msg: {$ret['msg']}, time used: {$usedTime}s");
                         $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
-<p>Scale down failed, message: {$ret['msg']}<p>
+<p>Scale down failed, time used: {$usedTime}s, message: {$ret['msg']}<p>
 STRING;
                         $this->sendAlarmEmail('Low cpu load, scale down failed', $content);
                     } else {
                         //缩容成功
-                        file_put_contents($scaleSmallFlagFile, time());
-
-                        Log::info("Scale down succeeded");
+                        Log::info("Scale down succeeded, time used: {$usedTime}s");
                         $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
-<p>Scale down succeeded<p>
+<p>Scale down succeeded, time used: {$usedTime}s<p>
 STRING;
                         $this->sendAlarmEmail('Low cpu load, scale down succeeded', $content);
                     }
@@ -1792,25 +1800,27 @@ STRING;
                     //距离上次scale down/in超过半小时，尝试scale in
                     Log::info("start scale in, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%");
 
+                    file_put_contents($scaleSmallFlagFile, time());
+
+                    $startTime = time();
                     $ret = $this->scaleIn($region);
+                    $usedTime = time() - $startTime;
                     if (!$ret['suc']) {
                         //缩容失败
-                        Log::error("Scale in failed, msg: {$ret['msg']}");
+                        Log::error("Scale in failed, msg: {$ret['msg']}, time used: {$usedTime}s");
 
                         $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
-<p>Scale in failed, message: {$ret['msg']}<p>
+<p>Scale in failed, time used: {$usedTime}s, message: {$ret['msg']}<p>
 STRING;
                         $this->sendAlarmEmail('Low cpu load, scale in failed', $content);
                     } else {
                         //缩容成功
 
-                        file_put_contents($scaleSmallFlagFile, time());
-
-                        Log::info("Scale in succeeded, msg");
+                        Log::info("Scale in succeeded, time used: {$usedTime}s");
                         $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
-<p>Scale in succeeded<p>
+<p>Scale in succeeded, time used: {$usedTime}s<p>
 STRING;
                         $this->sendAlarmEmail('Low cpu load, scale in succeeded', $content);
                     }
