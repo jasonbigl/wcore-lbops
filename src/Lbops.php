@@ -1304,7 +1304,7 @@ class Lbops extends Basic
     }
 
     /**
-     * 健康监控 (高性能并发版本)
+     * 健康监控 (全并发版本 - 所有区域并发检查)
      *
      * @param [type] $intervalS 检测时间间隔
      * @param [type] $failThreshold 失败指标的连续次数
@@ -1347,19 +1347,20 @@ class Lbops extends Basic
         $healthCheckParts = parse_url($this->config['health_check_url']);
         $healthCheckDomain = $healthCheckParts['host'];
 
-        // Process all regions concurrently
-        foreach ($regionNodes as $region => $nodeList) {
-            Log::info("Starting concurrent health check for region {$region} with " . count($nodeList) . " nodes");
+        $totalNodes = array_sum(array_map('count', $regionNodes));
+        Log::info("Starting fully concurrent health check across " . count($regionNodes) . " regions with {$totalNodes} total nodes");
 
-            $unhealthyNodes = $this->performConcurrentHealthChecks(
-                $nodeList,
-                $region,
-                $healthCheckDomain,
-                $intervalS,
-                $failThreshold,
-                $maxCheckAttempts
-            );
+        // 全并发检查所有区域的所有节点
+        $allUnhealthyNodes = $this->performFullyConcurrentHealthChecks(
+            $regionNodes,
+            $healthCheckDomain,
+            $intervalS,
+            $failThreshold,
+            $maxCheckAttempts
+        );
 
+        // 处理所有不健康的节点 - 按区域分组处理
+        foreach ($allUnhealthyNodes as $region => $unhealthyNodes) {
             if ($unhealthyNodes) {
                 //节点不健康
                 $nodeContent = array_map(function ($item) {
@@ -1370,27 +1371,111 @@ class Lbops extends Basic
                 $ret = $this->scaleUp($region, true);
                 if (!$ret['suc']) {
                     //扩容失败
-                    Log::error("Failed to scale up, msg: {$ret['msg']}");
+                    Log::error("Failed to scale up in {$region}, msg: {$ret['msg']}");
 
                     $content = implode('', $nodeContent) . "<p>Message: {$ret['msg']}<p>";
 
-                    $this->sendAlarmEmail('Unhealthy nodes, scale up failed', $content);
+                    $this->sendAlarmEmail("Unhealthy nodes in {$region}, scale up failed", $content);
                 } else {
                     //扩容成功
-                    Log::info("Scale up successfully");
+                    Log::info("Scale up successfully in {$region}");
                     $content = implode('', $nodeContent) . "<p>Scale up succeeded<p>";
-                    $this->sendAlarmEmail('Unhealthy nodes, scale up succeeded', $content);
+                    $this->sendAlarmEmail("Unhealthy nodes in {$region}, scale up succeeded", $content);
                 }
             }
         }
 
         $timeUsed = time() - $startTime;
 
-        Log::info("Finish monitor, time used: {$timeUsed}s");
+        Log::info("Finish fully concurrent monitor, time used: {$timeUsed}s");
     }
 
     /**
-     * 并发执行健康检查 (使用 cURL multi-handle)
+     * 全并发执行健康检查 - 所有区域所有节点一次性并发检查
+     *
+     * @param array $regionNodes 区域节点映射数组 ['region' => [nodes...]]
+     * @param string $healthCheckDomain 健康检查域名
+     * @param int $intervalS 检测时间间隔
+     * @param int $failThreshold 失败阈值
+     * @param int $maxCheckAttempts 最大检查次数
+     * @return array 按区域分组的不健康节点列表
+     */
+    private function performFullyConcurrentHealthChecks($regionNodes, $healthCheckDomain, $intervalS, $failThreshold, $maxCheckAttempts)
+    {
+        $allUnhealthyNodes = [];
+
+        // 扁平化所有节点，同时保留区域信息
+        $allNodesFlat = [];
+        foreach ($regionNodes as $region => $nodeList) {
+            $allUnhealthyNodes[$region] = [];
+            foreach ($nodeList as $node) {
+                $nodeKey = $region . '|' . $node['ipv4']; // 使用区域|IP作为唯一键
+                $allNodesFlat[$nodeKey] = [
+                    'node' => $node,
+                    'region' => $region,
+                    'unHealthyCount' => 0,
+                    'checkAttempts' => 0,
+                    'isUnhealthy' => false
+                ];
+            }
+        }
+
+        $totalNodes = count($allNodesFlat);
+        Log::info("Starting fully concurrent health check for {$totalNodes} nodes across " . count($regionNodes) . " regions");
+
+        // 执行多轮检查直到达到最大尝试次数或失败阈值
+        for ($round = 0; $round < $maxCheckAttempts; $round++) {
+            $startRoundTime = time();
+
+            // 只检查还未被判定为不健康的节点
+            $activeNodes = array_filter($allNodesFlat, function ($status) {
+                return !$status['isUnhealthy'];
+            });
+
+            if (empty($activeNodes)) {
+                break; // 所有节点都已经被判定
+            }
+
+            Log::info("Health check round " . ($round + 1) . ", checking " . count($activeNodes) . " active nodes across all regions");
+
+            // 并发检查当前活跃的所有节点（跨所有区域）
+            $roundResults = $this->executeFullyConcurrentHealthCheck($activeNodes, $healthCheckDomain);
+
+            // 更新节点健康状态
+            foreach ($roundResults as $nodeKey => $result) {
+                $allNodesFlat[$nodeKey]['checkAttempts']++;
+
+                if (!$result['success'] || $result['httpCode'] !== 200) {
+                    $allNodesFlat[$nodeKey]['unHealthyCount']++;
+                }
+
+                // 检查是否达到失败阈值
+                if ($allNodesFlat[$nodeKey]['unHealthyCount'] >= $failThreshold) {
+                    $allNodesFlat[$nodeKey]['isUnhealthy'] = true;
+                    $node = $allNodesFlat[$nodeKey]['node'];
+                    $region = $allNodesFlat[$nodeKey]['region'];
+
+                    Log::error("Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region} - failed {$allNodesFlat[$nodeKey]['unHealthyCount']} times");
+
+                    $allUnhealthyNodes[$region][] = "Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region}";
+                }
+            }
+
+            // 如果不是最后一轮，等待间隔时间
+            if ($round < $maxCheckAttempts - 1) {
+                $roundDuration = time() - $startRoundTime;
+                $sleepTime = max(0, $intervalS - $roundDuration);
+                if ($sleepTime > 0) {
+                    sleep($sleepTime);
+                }
+            }
+        }
+
+        return $allUnhealthyNodes;
+    }
+
+    /**
+     * 并发执行健康检查 (使用 cURL multi-handle) - 单区域版本
      *
      * @param array $nodeList 节点列表
      * @param string $region 区域名称
@@ -1469,7 +1554,73 @@ class Lbops extends Basic
     }
 
     /**
-     * 使用 cURL multi-handle 并发执行健康检查
+     * 使用 cURL multi-handle 全并发执行健康检查 - 跨所有区域
+     *
+     * @param array $activeNodes 活跃节点状态数组，键为 'region|ip' 格式
+     * @param string $healthCheckDomain 健康检查域名
+     * @return array 检查结果数组
+     */
+    private function executeFullyConcurrentHealthCheck($activeNodes, $healthCheckDomain)
+    {
+        $results = [];
+        $curlHandles = [];
+        $multiHandle = curl_multi_init();
+
+        // 为每个节点创建 cURL 句柄
+        foreach ($activeNodes as $nodeKey => $nodeStatus) {
+            $node = $nodeStatus['node'];
+            $nodeIp = $node['ipv4'];
+
+            $ch = curl_init($this->config['health_check_url']);
+
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_HEADER => false,
+                CURLOPT_FORBID_REUSE => false,
+                CURLOPT_TIMEOUT => 5,
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_FAILONERROR => false, // ignore http status code
+                CURLOPT_RESOLVE => ["{$healthCheckDomain}:443:{$nodeIp}"],
+                CURLOPT_NOSIGNAL => 1, // 避免信号中断
+            ]);
+
+            curl_multi_add_handle($multiHandle, $ch);
+            $curlHandles[$nodeKey] = $ch;
+        }
+
+        // 执行并发请求
+        $running = null;
+        do {
+            curl_multi_exec($multiHandle, $running);
+            curl_multi_select($multiHandle, 0.1); // 100ms 超时
+        } while ($running > 0);
+
+        // 收集结果
+        foreach ($curlHandles as $nodeKey => $ch) {
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            $errno = curl_errno($ch);
+
+            $results[$nodeKey] = [
+                'success' => ($errno === 0 && empty($error)),
+                'httpCode' => $httpCode,
+                'error' => $error,
+                'errno' => $errno
+            ];
+
+            // 清理
+            curl_multi_remove_handle($multiHandle, $ch);
+            curl_close($ch);
+        }
+
+        curl_multi_close($multiHandle);
+
+        return $results;
+    }
+
+    /**
+     * 使用 cURL multi-handle 并发执行健康检查 - 单区域版本
      *
      * @param array $activeNodes 活跃节点状态数组
      * @param string $healthCheckDomain 健康检查域名
@@ -1532,33 +1683,31 @@ class Lbops extends Basic
     }
 
     /**
-     * 性能测试：比较串行和并发健康检查的性能
+     * 性能测试：比较单区域并发和全区域并发健康检查的性能
      * 
-     * @param array $testNodes 测试节点列表 
+     * @param array $testRegionNodes 测试区域节点映射 ['region' => [nodes...]]
      * @param int $iterations 测试迭代次数
      * @return array 性能测试结果
      */
-    public function benchmarkHealthCheck($testNodes = null, $iterations = 1)
+    public function benchmarkHealthCheck($testRegionNodes = null, $iterations = 1)
     {
-        if (!$testNodes) {
+        if (!$testRegionNodes) {
             // 使用实际节点进行测试
             if ($this->config['r53_zones']) {
                 $ret = $this->route53->getAllNodes(true);
                 if (!$ret['suc']) {
                     return ['error' => 'Failed to get nodes for benchmark'];
                 }
-                $allNodes = $ret['data'] ?? [];
+                $testRegionNodes = $ret['data'] ?? [];
             } else {
                 $ret = $this->aga->getAllNodes(true);
                 if (!$ret['suc']) {
                     return ['error' => 'Failed to get nodes for benchmark'];
                 }
-                $allNodes = $ret['data'] ?? [];
+                $testRegionNodes = $ret['data'] ?? [];
             }
 
-            // 使用第一个区域的节点进行测试
-            $testNodes = reset($allNodes) ?: [];
-            if (empty($testNodes)) {
+            if (empty($testRegionNodes)) {
                 return ['error' => 'No nodes available for benchmark'];
             }
         }
@@ -1566,43 +1715,79 @@ class Lbops extends Basic
         $healthCheckParts = parse_url($this->config['health_check_url']);
         $healthCheckDomain = $healthCheckParts['host'];
 
+        $totalNodes = array_sum(array_map('count', $testRegionNodes));
+        $regionCount = count($testRegionNodes);
+
         $results = [
-            'node_count' => count($testNodes),
+            'region_count' => $regionCount,
+            'total_node_count' => $totalNodes,
             'iterations' => $iterations,
-            'concurrent_times' => [],
-            'concurrent_avg' => 0,
-            'performance_improvement' => 'N/A (concurrent only - old serial method replaced)'
+            'single_region_times' => [],
+            'single_region_avg' => 0,
+            'fully_concurrent_times' => [],
+            'fully_concurrent_avg' => 0,
+            'performance_improvement' => 0
         ];
 
-        Log::info("Starting health check benchmark with " . count($testNodes) . " nodes, {$iterations} iterations");
+        Log::info("Starting health check benchmark with {$totalNodes} nodes across {$regionCount} regions, {$iterations} iterations");
 
-        // 测试并发版本性能
+        // 测试单区域并发版本性能（模拟旧的区域-by-区域方法）
         for ($i = 0; $i < $iterations; $i++) {
             $startTime = microtime(true);
 
-            $activeNodes = [];
-            foreach ($testNodes as $node) {
-                $activeNodes[$node['ipv4']] = [
-                    'node' => $node,
-                    'unHealthyCount' => 0,
-                    'checkAttempts' => 0,
-                    'isUnhealthy' => false
-                ];
+            foreach ($testRegionNodes as $region => $nodeList) {
+                $activeNodes = [];
+                foreach ($nodeList as $node) {
+                    $activeNodes[$node['ipv4']] = [
+                        'node' => $node,
+                        'unHealthyCount' => 0,
+                        'checkAttempts' => 0,
+                        'isUnhealthy' => false
+                    ];
+                }
+                $this->executeConcurrentHealthCheck($activeNodes, $healthCheckDomain);
             }
 
-            $this->executeConcurrentHealthCheck($activeNodes, $healthCheckDomain);
+            $singleRegionTime = microtime(true) - $startTime;
+            $results['single_region_times'][] = $singleRegionTime;
 
-            $concurrentTime = microtime(true) - $startTime;
-            $results['concurrent_times'][] = $concurrentTime;
-
-            Log::info("Concurrent check iteration " . ($i + 1) . " completed in " . round($concurrentTime, 3) . "s");
+            Log::info("Single-region sequential iteration " . ($i + 1) . " completed in " . round($singleRegionTime, 3) . "s");
         }
 
-        $results['concurrent_avg'] = array_sum($results['concurrent_times']) / count($results['concurrent_times']);
+        // 测试全并发版本性能
+        for ($i = 0; $i < $iterations; $i++) {
+            $startTime = microtime(true);
 
-        Log::info("Benchmark completed. Average concurrent time: " . round($results['concurrent_avg'], 3) . "s");
-        Log::info("Estimated old serial time would be: ~" . round($results['concurrent_avg'] * count($testNodes), 1) . "s");
-        Log::info("Performance improvement: ~" . round(count($testNodes), 1) . "x faster");
+            $allNodesFlat = [];
+            foreach ($testRegionNodes as $region => $nodeList) {
+                foreach ($nodeList as $node) {
+                    $nodeKey = $region . '|' . $node['ipv4'];
+                    $allNodesFlat[$nodeKey] = [
+                        'node' => $node,
+                        'region' => $region,
+                        'unHealthyCount' => 0,
+                        'checkAttempts' => 0,
+                        'isUnhealthy' => false
+                    ];
+                }
+            }
+
+            $this->executeFullyConcurrentHealthCheck($allNodesFlat, $healthCheckDomain);
+
+            $fullyConcurrentTime = microtime(true) - $startTime;
+            $results['fully_concurrent_times'][] = $fullyConcurrentTime;
+
+            Log::info("Fully concurrent iteration " . ($i + 1) . " completed in " . round($fullyConcurrentTime, 3) . "s");
+        }
+
+        $results['single_region_avg'] = array_sum($results['single_region_times']) / count($results['single_region_times']);
+        $results['fully_concurrent_avg'] = array_sum($results['fully_concurrent_times']) / count($results['fully_concurrent_times']);
+        $results['performance_improvement'] = round($results['single_region_avg'] / $results['fully_concurrent_avg'], 2);
+
+        Log::info("Benchmark completed:");
+        Log::info("Average single-region sequential time: " . round($results['single_region_avg'], 3) . "s");
+        Log::info("Average fully concurrent time: " . round($results['fully_concurrent_avg'], 3) . "s");
+        Log::info("Performance improvement: " . $results['performance_improvement'] . "x faster");
 
         return $results;
     }
