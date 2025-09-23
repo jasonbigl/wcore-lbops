@@ -1942,8 +1942,24 @@ STRING;
             if ($lowLoadNodes == $totalNodes && time() - $lastScaleUpTime > 1800) {
                 //全部低负载，scale down or scale in 缩容（要慢）
                 //且距离上次扩容至少半小时，避免刚扩容就缩容
-                $ret = $this->getCurrentInstanceType();
-                $insType = $ret['data'] ?? '';
+
+                //当前地区的实例类型
+                $tmpNode = reset($nodeList);
+                $tmpInsId = $tmpNode['ins_id'];
+                $ret = $this->describeInstance($region, $tmpInsId);
+                if (!$ret['suc']) {
+                    $errorMessage = "Failed to describe instance in region {$region}, msg: {$ret['msg']}";
+                    Log::error($errorMessage);
+                    continue;
+                }
+                $insType = $ret['data']['InstanceType'] ?? null;
+                if (!$insType) {
+                    $errorMessage = "Failed to get instance type from instance {$tmpInsId} in region {$region}";
+                    Log::error($errorMessage);
+                    continue;
+                }
+
+                //最小的实例类型
                 $smallestInsType = reset($this->verticalScaleInstypes);
 
                 //有可能时scale down，也有可能是scale in
@@ -1951,7 +1967,7 @@ STRING;
                 $lastScaleSmallTime = file_exists($scaleSmallFlagFile) ? file_get_contents($scaleSmallFlagFile) : 0;
 
                 if ($insType && $insType != $smallestInsType && time() - $lastScaleSmallTime > 1800) {
-                    //不是最小的，缩容
+                    //不是最小的，缩容scale down
                     Log::info("start scale down, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%");
 
                     file_put_contents($scaleSmallFlagFile, time());
