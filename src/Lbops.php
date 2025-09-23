@@ -1175,9 +1175,17 @@ class Lbops extends Basic
         $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
         if (!$targetInsType) {
             //到底了，横向缩容
-            Log::error("current instance type {$insType} is the smallest, scale in");
 
-            return $this->scaleIn($region, 1);
+            if ($amount > 1) {
+                Log::info("current instance type {$insType} is the smallest, current nodes amount: {$amount}, scale in");
+
+                return $this->scaleIn($region, 1);
+            }
+
+            return [
+                'suc' => false,
+                'msg' => "current instance type {$insType} is the smallest, and current nodes amount is {$amount}, no way to scale down or scale in, skip"
+            ];
         }
 
         $ret = $this->canDoOp('scale-down');
