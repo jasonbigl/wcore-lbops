@@ -1912,7 +1912,7 @@ class Lbops extends Basic
             //debug log
             Log::info("nodes metrics in {$region}, current avg cpu: {$currentCPUAvg}%, low load nodes: {$lowLoadNodes}, total nodes: {$totalNodes}");
 
-            $scaleUpFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-scale-up.flag";
+            $scaleUpFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-{$region}-scale-up.flag";
             $lastScaleUpTime = file_exists($scaleUpFlagFile) ? file_get_contents($scaleUpFlagFile) : 0;
             if ($currentCPUAvg > $metricThreshold[1] && time() - $lastScaleUpTime > 300) {
                 //大于thread的第二个值，扩容（要快），scale up, 需要距离上次扩容至少5分钟，方便新扩容的机器生效
@@ -1964,7 +1964,7 @@ STRING;
                 $smallestInsType = reset($this->verticalScaleInstypes);
 
                 //有可能时scale down，也有可能是scale in
-                $scaleSmallFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-scale-small.flag";
+                $scaleSmallFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-{$region}-scale-small.flag";
                 $lastScaleSmallTime = file_exists($scaleSmallFlagFile) ? file_get_contents($scaleSmallFlagFile) : 0;
 
                 if ($insType && $insType != $smallestInsType && time() - $lastScaleSmallTime > 1800) {
