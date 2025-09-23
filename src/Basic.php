@@ -94,6 +94,8 @@ class Basic
 
             'op_lock_file' => $config['module'] ? "/tmp/wcore-lbops-{$config['module']}-op.lock" : "/tmp/wcore-lbops-op.lock",
 
+            'region_min_nodes_amount' => [], //每个地区最少机器数目,默认最小为1
+
             // 'auto_scale_cpu_metric' => [],
             // 'auto_scale_cpu_threshold' => [], //缩容和扩容百分比
         ];
