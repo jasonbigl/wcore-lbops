@@ -63,7 +63,7 @@ class Lbops extends Basic
 
         //当前机器类型
         if (!$insType) {
-            $ret = $this->getCurrentInstanceType();
+            $ret = $this->getCurrentInstanceType($targetRegion);
             if (!$ret['suc']) {
                 $this->unlockOp();
                 return $ret;
@@ -630,7 +630,7 @@ class Lbops extends Basic
         }
 
         //当前instance类型
-        $ret = $this->getCurrentInstanceType();
+        $ret = $this->getCurrentInstanceType($region);
         if (!$ret['suc']) {
             $errorMessage = "unable to get current instance type to scale out, skip";
             Log::error($errorMessage);
@@ -968,7 +968,7 @@ class Lbops extends Basic
         $targetInsType = end($this->verticalScaleInstypes);
 
         //当前instance类型, 没有类型也没关系，用最大的一个
-        $ret = $this->getCurrentInstanceType();
+        $ret = $this->getCurrentInstanceType($region);
         $insType = $ret['data'] ?? '';
 
         if ($insType) {
@@ -1122,7 +1122,7 @@ class Lbops extends Basic
         }
 
         //当前instance类型
-        $ret = $this->getCurrentInstanceType();
+        $ret = $this->getCurrentInstanceType($region);
         if (!$ret['suc']) {
             return $ret;
         }
@@ -1944,20 +1944,13 @@ STRING;
                 //且距离上次扩容至少半小时，避免刚扩容就缩容
 
                 //当前地区的实例类型
-                $tmpNode = reset($nodeList);
-                $tmpInsId = $tmpNode['ins_id'];
-                $ret = $this->describeInstance($region, $tmpInsId);
+                $ret = $this->getCurrentInstanceType($region);
                 if (!$ret['suc']) {
-                    $errorMessage = "Failed to describe instance in region {$region}, msg: {$ret['msg']}";
+                    $errorMessage = "Failed to current instance type in region {$region}, msg: {$ret['msg']}";
                     Log::error($errorMessage);
                     continue;
                 }
-                $insType = $ret['data']['InstanceType'] ?? null;
-                if (!$insType) {
-                    $errorMessage = "Failed to get instance type from instance {$tmpInsId} in region {$region}";
-                    Log::error($errorMessage);
-                    continue;
-                }
+                $insType = $ret['data'];
 
                 //最小的实例类型
                 $smallestInsType = reset($this->verticalScaleInstypes);
@@ -1968,7 +1961,7 @@ STRING;
 
                 if ($insType && $insType != $smallestInsType && time() - $lastScaleSmallTime > 1800) {
                     //不是最小的，缩容scale down
-                    Log::info("start scale down, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%");
+                    Log::info("start scale down, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%, current instance type: {$insType}, smallest instance type: {$smallestInsType}");
 
                     file_put_contents($scaleSmallFlagFile, time());
 

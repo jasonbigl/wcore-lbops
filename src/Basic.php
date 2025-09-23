@@ -936,10 +936,12 @@ STRING;
      *
      * @return array
      */
-    function getCurrentInstanceType()
+    function getCurrentInstanceType($region = null)
     {
-        //以第一个地区为标准获取类型
-        $region = reset($this->config['regions']);
+        if (!$region) {
+            //如果没有指定region，以第一个地区为标准获取类型
+            $region = reset($this->config['regions']);
+        }
 
         $ret = $this->getNodesByRegion($region);
         if (!$ret) {
@@ -956,6 +958,7 @@ STRING;
             ];
         }
 
+        //用第一个机器为标准获取类型
         $node = reset($regionNodes);
         $insId = $node['ins_id'];
         $ret = $this->describeInstance($region, $insId);
