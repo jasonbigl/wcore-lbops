@@ -1581,6 +1581,8 @@ class Lbops extends Basic
 
             $ch = curl_init($this->config['health_check_url']);
 
+            $verboseOutputHandle = fopen("/tmp/wcore-monitor-{$nodeIp}.log", 'w+');
+
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => false,
@@ -1591,10 +1593,16 @@ class Lbops extends Basic
                 CURLOPT_FAILONERROR => false, // ignore http status code
                 CURLOPT_RESOLVE => ["{$healthCheckDomain}:443:{$nodeIp}"],
                 CURLOPT_NOSIGNAL => 1, // 避免信号中断
+                CURLOPT_VERBOSE => true,
+                CURLOPT_STDERR => $verboseOutputHandle,
             ]);
 
             curl_multi_add_handle($multiHandle, $ch);
-            $curlHandles[$nodeKey] = $ch;
+            $curlHandles[$nodeKey] = [
+                'ch' => $ch,
+                'verboseOutputHandle' => $verboseOutputHandle,
+                'nodeIp' => $nodeIp,
+            ];
         }
 
         // 执行并发请求
@@ -1605,21 +1613,32 @@ class Lbops extends Basic
         } while ($running > 0);
 
         // 收集结果
-        foreach ($curlHandles as $nodeKey => $ch) {
+        foreach ($curlHandles as $nodeKey => $handleItem) {
+            $ch = $handleItem['ch'];
+            $verboseOutputHandle = $handleItem['verboseOutputHandle'];
+            $nodeIp = $handleItem['nodeIp'];
+
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $error = curl_error($ch);
             $errno = curl_errno($ch);
 
+            // Rewind the stream and get its contents
+            rewind($verboseOutputHandle);
+            $verboseOutput = stream_get_contents($verboseOutputHandle);
             $results[$nodeKey] = [
                 'success' => ($errno === 0 && empty($error)),
                 'httpCode' => $httpCode,
                 'error' => $error,
-                'errno' => $errno
+                'errno' => $errno,
+                'resolve' => "{$healthCheckDomain}:443:{$nodeIp}",
+                'verbose' => $verboseOutput
             ];
 
             // 清理
             curl_multi_remove_handle($multiHandle, $ch);
             curl_close($ch);
+            fclose($verboseOutputHandle);
+            unlink("/tmp/wcore-monitor-{$nodeIp}.log");
         }
 
         curl_multi_close($multiHandle);
