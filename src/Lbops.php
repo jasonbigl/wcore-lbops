@@ -1463,9 +1463,9 @@ class Lbops extends Basic
                     $node = $allNodesFlat[$nodeKey]['node'];
                     $region = $allNodesFlat[$nodeKey]['region'];
 
-                    Log::error("Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region} - failed {$allNodesFlat[$nodeKey]['unHealthyCount']} times");
+                    Log::error("Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region} - failed {$allNodesFlat[$nodeKey]['unHealthyCount']} times. Result: " . var_export($result, true));
 
-                    $allUnhealthyNodes[$region][] = "Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region}";
+                    $allUnhealthyNodes[$region][] = "Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region}. Result: " . var_export($result, true);
                 }
             }
 
