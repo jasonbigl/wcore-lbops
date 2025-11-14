@@ -1355,9 +1355,6 @@ class Lbops extends Basic
         $healthCheckParts = parse_url($this->config['health_check_url']);
         $healthCheckDomain = $healthCheckParts['host'];
 
-        $totalNodes = array_sum(array_map('count', $regionNodes));
-        Log::info("Starting fully concurrent health check across " . count($regionNodes) . " regions with {$totalNodes} total nodes");
-
         // 全并发检查所有区域的所有节点
         $allUnhealthyNodes = $this->performFullyConcurrentHealthChecks(
             $regionNodes,
@@ -1429,55 +1426,63 @@ class Lbops extends Basic
         }
 
         $totalNodes = count($allNodesFlat);
-        Log::info("Starting fully concurrent health check for {$totalNodes} nodes across " . count($regionNodes) . " regions");
 
-        // 执行多轮检查直到达到最大尝试次数或失败阈值
-        for ($round = 0; $round < $maxCheckAttempts; $round++) {
-            $startRoundTime = time();
+        //一次并行检测5个，避免一次检测太多造成ssl connection timeout，导致检测失败，实际node是健康的
+        $allNodesFlatChunks = array_chunk($allNodesFlat, 5);
 
-            // 只检查还未被判定为不健康的节点
-            $activeNodes = array_filter($allNodesFlat, function ($status) {
-                return !$status['isUnhealthy'];
-            });
+        Log::info("Starting fully concurrent health check for {$totalNodes} nodes across " . count($regionNodes) . " regions, chunks: " . count($allNodesFlatChunks) . ". chunk size: " . count($allNodesFlatChunks[0]));
 
-            if (empty($activeNodes)) {
-                break; // 所有节点都已经被判定
-            }
 
-            Log::info("Health check round " . ($round + 1) . ", checking " . count($activeNodes) . " active nodes across all regions");
+        foreach ($allNodesFlatChunks as $chunkNodes) {
+            // 执行多轮检查直到达到最大尝试次数或失败阈值
+            for ($round = 0; $round < $maxCheckAttempts; $round++) {
+                $startRoundTime = time();
 
-            // 并发检查当前活跃的所有节点（跨所有区域）
-            $roundResults = $this->executeFullyConcurrentHealthCheck($activeNodes, $healthCheckDomain);
+                // 只检查还未被判定为不健康的节点
+                $activeNodes = array_filter($chunkNodes, function ($status) {
+                    return !$status['isUnhealthy'];
+                });
 
-            // 更新节点健康状态
-            foreach ($roundResults as $nodeKey => $result) {
-                $allNodesFlat[$nodeKey]['checkAttempts']++;
-
-                if (!$result['success'] || $result['httpCode'] !== 200) {
-                    $allNodesFlat[$nodeKey]['unHealthyCount']++;
+                if (empty($activeNodes)) {
+                    break; // 所有节点都已经被判定
                 }
 
-                // 检查是否达到失败阈值
-                if ($allNodesFlat[$nodeKey]['unHealthyCount'] >= $failThreshold) {
-                    $allNodesFlat[$nodeKey]['isUnhealthy'] = true;
-                    $node = $allNodesFlat[$nodeKey]['node'];
-                    $region = $allNodesFlat[$nodeKey]['region'];
+                Log::info("Health check round " . ($round + 1) . ", checking " . count($activeNodes) . " nodes");
 
-                    Log::error("Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region} - failed {$allNodesFlat[$nodeKey]['unHealthyCount']} times. Result: " . var_export($result, true));
+                // 并发检查当前活跃的所有节点（跨所有区域）
+                $roundResults = $this->executeFullyConcurrentHealthCheck($activeNodes, $healthCheckDomain);
 
-                    $allUnhealthyNodes[$region][] = "Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region}. Result: " . var_export($result, true);
+                // 更新节点健康状态
+                foreach ($roundResults as $nodeKey => $result) {
+                    $allNodesFlat[$nodeKey]['checkAttempts']++;
+
+                    if (!$result['success'] || $result['httpCode'] !== 200) {
+                        $allNodesFlat[$nodeKey]['unHealthyCount']++;
+                    }
+
+                    // 检查是否达到失败阈值
+                    if ($allNodesFlat[$nodeKey]['unHealthyCount'] >= $failThreshold) {
+                        $allNodesFlat[$nodeKey]['isUnhealthy'] = true;
+                        $node = $allNodesFlat[$nodeKey]['node'];
+                        $region = $allNodesFlat[$nodeKey]['region'];
+
+                        Log::error("Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region} - failed {$allNodesFlat[$nodeKey]['unHealthyCount']} times. Result: " . var_export($result, true));
+
+                        $allUnhealthyNodes[$region][] = "Unhealthy node {$node['ins_id']} ({$node['ipv4']}) in {$region}. Result: " . var_export($result, true);
+                    }
                 }
-            }
 
-            // 如果不是最后一轮，等待间隔时间
-            if ($round < $maxCheckAttempts - 1) {
-                $roundDuration = time() - $startRoundTime;
-                $sleepTime = max(0, $intervalS - $roundDuration);
-                if ($sleepTime > 0) {
-                    sleep($sleepTime);
+                // 如果不是最后一轮，等待间隔时间
+                if ($round < $maxCheckAttempts - 1) {
+                    $roundDuration = time() - $startRoundTime;
+                    Log::info("round {$round} duration: {$roundDuration}s");
+                    
+                    sleep($intervalS);
                 }
             }
         }
+
+
 
         return $allUnhealthyNodes;
     }
@@ -1588,8 +1593,8 @@ class Lbops extends Basic
                 CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_HEADER => false,
                 CURLOPT_FORBID_REUSE => false,
-                CURLOPT_TIMEOUT => 5,
-                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_TIMEOUT => 10,
+                CURLOPT_CONNECTTIMEOUT => 5,
                 CURLOPT_FAILONERROR => false, // ignore http status code
                 CURLOPT_RESOLVE => ["{$healthCheckDomain}:443:{$nodeIp}"],
                 CURLOPT_NOSIGNAL => 1, // 避免信号中断
@@ -1608,9 +1613,13 @@ class Lbops extends Basic
         // 执行并发请求
         $running = null;
         do {
-            curl_multi_exec($multiHandle, $running);
-            curl_multi_select($multiHandle, 0.1); // 100ms 超时
-        } while ($running > 0);
+            $status = curl_multi_exec($multiHandle, $running);
+
+            // 如果还有正在执行的请求，等待一小段时间，以防止 CPU 占用过高
+            if ($running > 0) {
+                curl_multi_select($multiHandle, 0.1); // 100ms 超时
+            }
+        } while ($running > 0 && $status === CURLM_OK);
 
         // 收集结果
         foreach ($curlHandles as $nodeKey => $handleItem) {
