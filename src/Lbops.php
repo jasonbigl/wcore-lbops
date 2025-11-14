@@ -1433,6 +1433,7 @@ class Lbops extends Basic
         Log::info("Starting fully concurrent health check for {$totalNodes} nodes across " . count($regionNodes) . " regions, chunks: " . count($allNodesFlatChunks) . ". chunk size: " . count($allNodesFlatChunks[0]));
 
 
+        $maxRoundDuration = 0;
         foreach ($allNodesFlatChunks as $chunkNodes) {
             // 执行多轮检查直到达到最大尝试次数或失败阈值
             for ($round = 0; $round < $maxCheckAttempts; $round++) {
@@ -1447,7 +1448,7 @@ class Lbops extends Basic
                     break; // 所有节点都已经被判定
                 }
 
-                Log::info("Health check round " . ($round + 1) . ", checking " . count($activeNodes) . " nodes");
+                //Log::info("Health check round " . ($round + 1) . ", checking " . count($activeNodes) . " nodes");
 
                 // 并发检查当前活跃的所有节点（跨所有区域）
                 $roundResults = $this->executeFullyConcurrentHealthCheck($activeNodes, $healthCheckDomain);
@@ -1475,14 +1476,15 @@ class Lbops extends Basic
                 // 如果不是最后一轮，等待间隔时间
                 if ($round < $maxCheckAttempts - 1) {
                     $roundDuration = time() - $startRoundTime;
-                    Log::info("Health check round duration: {$roundDuration}s");
-
+                    if ($roundDuration > $maxRoundDuration) {
+                        $maxRoundDuration = $roundDuration;
+                    }
                     sleep($intervalS);
                 }
             }
         }
 
-
+        Log::info("Health check round max duration: {$maxRoundDuration}s");
 
         return $allUnhealthyNodes;
     }
