@@ -1428,7 +1428,7 @@ class Lbops extends Basic
         $totalNodes = count($allNodesFlat);
 
         //一次并行检测5个，避免一次检测太多造成ssl connection timeout，导致检测失败，实际node是健康的
-        $allNodesFlatChunks = array_chunk($allNodesFlat, 5);
+        $allNodesFlatChunks = array_chunk($allNodesFlat, 6);
 
         Log::info("Starting fully concurrent health check for {$totalNodes} nodes across " . count($regionNodes) . " regions, chunks: " . count($allNodesFlatChunks) . ". chunk size: " . count($allNodesFlatChunks[0]));
 
