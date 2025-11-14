@@ -1475,8 +1475,8 @@ class Lbops extends Basic
                 // 如果不是最后一轮，等待间隔时间
                 if ($round < $maxCheckAttempts - 1) {
                     $roundDuration = time() - $startRoundTime;
-                    Log::info("round {$round} duration: {$roundDuration}s");
-                    
+                    Log::info("Health check round duration: {$roundDuration}s");
+
                     sleep($intervalS);
                 }
             }
