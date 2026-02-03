@@ -612,7 +612,7 @@ class Lbops extends Basic
      * @param integer $amount 服务器数目
      * @return array
      */
-    function scaleOut($region, $amount = 1)
+    function scaleOut($region, $amount = 1, $ignoreLock = false)
     {
         if ($amount < 1 || $amount > 50) {
             $errorMessage = "invalid scale out amount, should between 1~50, current: {$amount}";
@@ -651,9 +651,14 @@ class Lbops extends Basic
         $insType = $ret['data'];
 
         //lock
-        $ret = $this->canDoOp('scale-out');
-        if (!$ret['suc']) {
-            return $ret;
+        if (!$ignoreLock) {
+            $ret = $this->canDoOp('scale-out');
+            if (!$ret['suc']) {
+                return $ret;
+            }
+        } else {
+            //强制扩容，不看锁，但是要锁住自身
+            $this->lockOp('scale-out');
         }
 
         try {
@@ -936,10 +941,10 @@ class Lbops extends Basic
      * 竖向扩容（增加机器资源如cpu等）
      *
      * @param [type] $region 地区
-     * @param boolean $force 是否强制扩容
+     * @param boolean $ignoreLock 是否强制扩容
      * @return array
      */
-    function scaleUp($region, $force = false)
+    function scaleUp($region, $ignoreLock = false)
     {
         //当前版本
         $ret = $this->getCurrentVersion();
@@ -973,7 +978,7 @@ class Lbops extends Basic
         $amount = count($nodesList);
 
         //lock
-        if (!$force) {
+        if (!$ignoreLock) {
             $ret = $this->canDoOp('scale-up');
             if (!$ret['suc']) {
                 return $ret;
@@ -997,10 +1002,16 @@ class Lbops extends Basic
                     $targetKey = $currentKey + 1;
                     $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
                     if (!$targetInsType) {
-                        //到顶了，横向扩容 - 注意：scaleOut会自己管理锁，所以先释放当前锁
-                        Log::info("current instance type {$insType} is the largest, scale out");
+                        //到顶了
+                        $errorMessage = "current instance type {$insType} is the largest, unable to scale up";
+                        Log::error($errorMessage);
+
                         $this->unlockOp();
-                        return $this->scaleOut($region, $amount);
+
+                        return [
+                            'suc' => false,
+                            'msg' => $errorMessage
+                        ];
                     }
                 }
             }
@@ -1195,17 +1206,10 @@ class Lbops extends Basic
         $targetKey = $currentKey - 1;
         $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
         if (!$targetInsType) {
-            //到底了，横向缩容 - scaleIn 会自己管理锁
-            $minNodeCount = $this->config['region_min_nodes_amount'][$region] ?? 1;
-            if ($amount > $minNodeCount) {
-                Log::info("current instance type {$insType} is the smallest, current nodes amount: {$amount}, scale in");
-
-                return $this->scaleIn($region, 1);
-            }
-
+            //到底了
             return [
                 'suc' => false,
-                'msg' => "current instance type {$insType} is the smallest, and current nodes amount: {$amount}, min nodes amount: {$minNodeCount}, no way to scale down or scale in, skip"
+                'msg' => "current instance type {$insType} is the smallest, no way to scale down"
             ];
         }
 
@@ -1863,7 +1867,7 @@ class Lbops extends Basic
         //debug log
         Log::info("start watching auto scale");
 
-        $startTime = time();
+        $aStartTime = time();
 
         $regionNodes = [];
         if ($this->config['r53_zones']) {
@@ -1965,14 +1969,22 @@ class Lbops extends Basic
             //debug log
             Log::info("nodes metrics in {$region}, current avg cpu: {$currentCPUAvg}%, low load nodes: {$lowLoadNodes}, total nodes: {$totalNodes}");
 
-            $scaleUpFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-{$region}-scale-up.flag";
-            $lastScaleUpTime = file_exists($scaleUpFlagFile) ? file_get_contents($scaleUpFlagFile) : 0;
-            if ($currentCPUAvg > $metricThreshold[1] && time() - $lastScaleUpTime > 300) {
-                //大于thread的第二个值，扩容（要快），scale up, 需要距离上次扩容至少5分钟，方便新扩容的机器生效
-                Log::info("start scale up, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, nodes: {$totalNodes}, threshold: {$metricThreshold[1]}%");
+            //时间戳
+            $scaleBigTimestampFile = "/tmp/wcore-lbops-{$this->config['module']}-{$region}-scale-big.timestamp";
+            $scaleSmallTimestampFile = "/tmp/wcore-lbops-{$this->config['module']}-{$region}-scale-small.timestamp";
+
+            //scale big
+            $lastScaleBigTimestamp = file_exists($scaleBigTimestampFile) ? file_get_contents($scaleBigTimestampFile) : 0;
+            if ($currentCPUAvg > $metricThreshold[1] && time() - $lastScaleBigTimestamp > 360) {
+
+                //大于thread的第二个值，扩容（要快），scale up, 需要距离上次扩容至少6分钟，方便新扩容的机器生效
+                Log::info("start scale big, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, nodes: {$totalNodes}, threshold: {$metricThreshold[1]}%");
 
                 $startTime = time();
-                $ret = $this->scaleUp($region, true);
+
+                //scale up or scale out, 优先scale up
+                $ret = $this->autoScaleBig($region, true);
+
                 $usedTime = time() - $startTime;
 
                 if (!$ret['suc']) {
@@ -1987,7 +1999,8 @@ STRING;
                 } else {
                     //扩容成功
 
-                    file_put_contents($scaleUpFlagFile, time());
+                    //记录时间
+                    file_put_contents($scaleBigTimestampFile, time());
 
                     Log::info("Scale up succeeded, msg: {$ret['msg']}, time used: {$usedTime}s");
 
@@ -1999,63 +2012,169 @@ STRING;
                 }
             }
 
-            $lastScaleUpTime = file_exists($scaleUpFlagFile) ? file_get_contents($scaleUpFlagFile) : 0;
+            //scale small
+            //重新获取时间
+            $lastScaleBigTimestamp = file_exists($scaleBigTimestampFile) ? file_get_contents($scaleBigTimestampFile) : 0;
+            $lastScaleSmallTimestamp = file_exists($scaleSmallTimestampFile) ? file_get_contents($scaleSmallTimestampFile) : 0;
 
-            if ($lowLoadNodes == $totalNodes && time() - $lastScaleUpTime > 1800) {
+            if (
+                $lowLoadNodes == $totalNodes
+                && time() - $lastScaleBigTimestamp > 3600
+                && time() - $lastScaleSmallTimestamp > 3600
+            ) {
                 //全部低负载，scale down or scale in 缩容（要慢）
                 //且距离上次扩容至少半小时，避免刚扩容就缩容
+                //距离上次缩容至少也半小时后，避免刚缩完就继续缩容
 
-                //当前地区的实例类型
-                $ret = $this->getCurrentInstanceType($region);
+                //不是最小的，缩容scale down
+                Log::info("start scale down, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%");
+
+                $startTime = time();
+
+                $ret = $this->autoScaleSmall($region);
+
+                $usedTime = time() - $startTime;
                 if (!$ret['suc']) {
-                    $errorMessage = "Failed to current instance type in region {$region}, msg: {$ret['msg']}";
-                    Log::error($errorMessage);
-                    continue;
-                }
-                $insType = $ret['data'];
-
-                //最小的实例类型
-                $smallestInsType = reset($this->verticalScaleInstypes);
-
-                //scale down，如果是最小的实例且有多余的实例，scale down中会进行scale in
-                $scaleDownFlagFile = "/tmp/wcore-lbops-{$this->config['module']}-{$region}-scale-down.flag";
-                $lastScaleDownTime = file_exists($scaleDownFlagFile) ? file_get_contents($scaleDownFlagFile) : 0;
-
-                if ($insType && $insType != $smallestInsType && time() - $lastScaleDownTime > 1800) {
-                    //不是最小的，缩容scale down
-                    Log::info("start scale down, nodes metrics in {$region}, current avg. cpu: {$currentCPUAvg}%, threshold: {$metricThreshold[0]}%, current instance type: {$insType}, smallest instance type: {$smallestInsType}");
-
-                    $startTime = time();
-                    $ret = $this->scaleDown($region);
-                    $usedTime = time() - $startTime;
-                    if (!$ret['suc']) {
-                        //缩容失败
-                        Log::error("Scale down failed, msg: {$ret['msg']}, time used: {$usedTime}s");
-                        $content = <<<STRING
+                    //缩容失败
+                    Log::error("Scale down failed, msg: {$ret['msg']}, time used: {$usedTime}s");
+                    $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
 <p>Scale down failed, time used: {$usedTime}s, message: {$ret['msg']}<p>
 STRING;
-                        $this->sendAlarmEmail('Low cpu load, scale down failed', $content);
-                    } else {
-                        //缩容成功
+                    $this->sendAlarmEmail('Low cpu load, scale down failed', $content);
+                } else {
+                    //缩容成功
 
-                        file_put_contents($scaleDownFlagFile, time());
+                    //记录时间
+                    file_put_contents($scaleSmallTimestampFile, time());
 
-                        Log::info("Scale down succeeded, time used: {$usedTime}s");
-                        $content = <<<STRING
+                    Log::info("Scale down succeeded, time used: {$usedTime}s");
+                    $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
 <p>Scale down succeeded, time used: {$usedTime}s<p>
 STRING;
-                        $this->sendAlarmEmail('Low cpu load, scale down succeeded', $content);
-                    }
+                    $this->sendAlarmEmail('Low cpu load, scale down succeeded', $content);
                 }
             }
         }
 
-        $usedTime = time() - $startTime;
+        $usedTime = time() - $aStartTime;
 
         //debug log
         Log::info("end watching auto scale, time used: {$usedTime}s");
+    }
+
+    /**
+     * 像上扩容，优先scaleup(增加cpu)，如果cpu不足，则scaleout(增加机器)
+     *
+     * @return void
+     */
+    function autoScaleBig($region, $ignoreLock = false)
+    {
+        //当前instance类型, 没有类型也没关系，用最大的一个
+        $ret = $this->getCurrentInstanceType($region);
+        $currentInsType = $ret['data'] ?? '';
+
+        if (!$currentInsType) {
+            $errorMessage = "unable to get current instance type to auto scale big, skip";
+            Log::error($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage
+            ];
+        }
+
+        $currentInsTypeKey = array_search($currentInsType, $this->verticalScaleInstypes);
+        if ($currentInsTypeKey === false) {
+            $errorMessage = "unable to find current instance type {$currentInsType} location in types: " . implode(',', $this->verticalScaleInstypes);
+            Log::error($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage
+            ];
+        }
+
+        $biggestInsTypeKey = count($this->verticalScaleInstypes) - 1;
+
+        if ($currentInsTypeKey < $biggestInsTypeKey) {
+            //不是最大的，则scale up
+            $ret = $this->scaleUp($region, $ignoreLock);
+            if (!$ret['suc']) {
+                return $ret;
+            }
+        } else {
+            //是最大的，则scale out
+            $ret = $this->scaleOut($region, 1, $ignoreLock);
+            if (!$ret['suc']) {
+                return $ret;
+            }
+        }
+
+        return [
+            'suc' => true,
+            'msg' => 'auto scale big succeeded',
+        ];
+    }
+
+    /**
+     * 像下缩容，优先scaledown(减少cpu)，如果cpu不足，则scalein(减少机器)
+     *
+     * @return void
+     */
+    function autoScaleSmall($region)
+    {
+        //当前instance类型, 没有类型也没关系，用最大的一个
+        $ret = $this->getCurrentInstanceType($region);
+        $currentInsType = $ret['data'] ?? '';
+
+        if (!$currentInsType) {
+            $errorMessage = "unable to get current instance type to auto scale small, skip";
+            Log::error($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage
+            ];
+        }
+
+        $currentInsTypeKey = array_search($currentInsType, $this->verticalScaleInstypes);
+        if ($currentInsTypeKey === false) {
+            $errorMessage = "unable to find current instance type {$currentInsType} location in types: " . implode(',', $this->verticalScaleInstypes);
+            Log::error($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage
+            ];
+        }
+
+        if ($currentInsTypeKey > 0) {
+            //不是最小的，则scale down
+            $ret = $this->scaleDown($region);
+            if (!$ret['suc']) {
+                return $ret;
+            }
+        } else {
+            //是最小的
+            //检查最小机器数
+            $minNodeCount = $this->config['region_min_nodes_amount'][$region] ?? 1;
+
+            //当前数量
+            $ret = $this->getNodesByRegion($region);
+            $nodesList = $ret['data'] ?? [];
+            $currentNodesCount = count($nodesList);
+
+            //大于最小保留机器数，则销毁一些机器
+            if ($currentNodesCount > $minNodeCount) {
+                $ret = $this->scaleIn($region, 1);
+                if (!$ret['suc']) {
+                    return $ret;
+                }
+            }
+        }
+
+        return [
+            'suc' => true,
+            'msg' => 'auto scale small succeeded',
+        ];
     }
 
     /**
