@@ -46,7 +46,7 @@ class Lbops extends Basic
     /**
      * 新版本发布
      *
-     * @return void
+     * @return array
      */
     public function deploy($version, $allocateNewEIP = false, $targetRegion = null, $insType = null)
     {
@@ -55,6 +55,20 @@ class Lbops extends Basic
             return $ret;
         }
 
+        try {
+            return $this->doDeploy($version, $allocateNewEIP, $targetRegion, $insType);
+        } finally {
+            $this->unlockOp();
+        }
+    }
+
+    /**
+     * 实际执行部署逻辑
+     *
+     * @return array
+     */
+    protected function doDeploy($version, $allocateNewEIP, $targetRegion, $insType)
+    {
         $startTime = time();
 
         //当前版本
@@ -65,7 +79,6 @@ class Lbops extends Basic
         if (!$insType) {
             $ret = $this->getCurrentInstanceType($targetRegion);
             if (!$ret['suc']) {
-                $this->unlockOp();
                 return $ret;
             }
 
@@ -108,7 +121,6 @@ class Lbops extends Basic
                 //部署并等待app完成
                 $ret = $this->launchNode($region, $version, $insType);
                 if (!$ret['suc']) {
-                    $this->unlockOp();
                     return $ret;
                 }
 
@@ -132,7 +144,6 @@ class Lbops extends Basic
             $ret = $this->waitAppReady($ipv4List);
             if (!$ret['suc']) {
                 Log::error("Failed to wait app ready in {$region}, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
 
@@ -142,7 +153,6 @@ class Lbops extends Basic
                 $ret = $this->route53->getNodesByRegion($region, true);
                 if (!$ret['suc']) {
                     Log::error("Failed to get nodes by region from route53, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
 
@@ -181,7 +191,6 @@ class Lbops extends Basic
                     $ret = $this->route53->replaceNodes($region, $newIpList);
                     if (!$ret['suc']) {
                         Log::error("Failed to replace nodes in {$region}, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
 
@@ -189,7 +198,6 @@ class Lbops extends Basic
                     $ret = $this->route53->updateTags($version);
                     if (!$ret['suc']) {
                         Log::error("Failed to update tags in {$region}, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
                 } else {
@@ -201,7 +209,6 @@ class Lbops extends Basic
                         if (!$newInsId) {
                             $errorMessage = "can not get new instance id according to route53 and inslist, region nodes: " . json_encode($regionNodes, JSON_UNESCAPED_SLASHES) . ', insList: ' . json_encode($insList, JSON_UNESCAPED_SLASHES) . ', idx: ' . $idx;
                             Log::error($errorMessage);
-                            $this->unlockOp();
                             return [
                                 'suc' => false,
                                 'msg' => $errorMessage
@@ -213,7 +220,6 @@ class Lbops extends Basic
                         if (!$ret['suc']) {
                             $errorMessage = "Failed to get allocate id from EIP {$oldEIP}, msg: {$ret['msg']}";
                             Log::error($errorMessage);
-                            $this->unlockOp();
                             return [
                                 'suc' => false,
                                 'msg' => $errorMessage
@@ -226,7 +232,6 @@ class Lbops extends Basic
                         if (!$ret['suc']) {
                             $errorMessage = "Failed to associate EIP {$oldEIP} with instance {$newInsId}, msg: {$ret['msg']}";
                             Log::error($errorMessage);
-                            $this->unlockOp();
                             return [
                                 'suc' => false,
                                 'msg' => $errorMessage
@@ -244,7 +249,6 @@ class Lbops extends Basic
                     $ret = $this->aga->listListenerArns($agaArn);
                     if (!$ret['suc']) {
                         Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
 
@@ -255,7 +259,6 @@ class Lbops extends Basic
                     $ret = $this->aga->addEndpoints($agaListenerArn, $region, $insIdList);
                     if (!$ret['suc']) {
                         Log::error("Failed to add endpoints to aga, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
                 }
@@ -272,7 +275,6 @@ class Lbops extends Basic
                     $ret = $this->aga->listListenerArns($agaArn);
                     if (!$ret['suc']) {
                         Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
 
@@ -283,7 +285,6 @@ class Lbops extends Basic
                     $ret = $this->aga->waitEndpointsHealthy($agaListenerArn, $region, $insIdList);
                     if (!$ret['suc']) {
                         Log::error("Failed to wait endpoints healthy in aga, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
 
@@ -291,7 +292,6 @@ class Lbops extends Basic
                     $ret = $this->aga->enableEndpoints($agaListenerArn, $region, $insIdList);
                     if (!$ret['suc']) {
                         Log::error("Failed to enable endpoints in aga, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
                 }
@@ -305,7 +305,6 @@ class Lbops extends Basic
                 $ret = $this->aga->waitAgaDeployed($agaArn);
                 if (!$ret['suc']) {
                     Log::error("Failed to wait aga deployed, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
 
@@ -313,7 +312,6 @@ class Lbops extends Basic
                 $ret = $this->aga->listListenerArns($agaArn);
                 if (!$ret['suc']) {
                     Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
 
@@ -328,7 +326,6 @@ class Lbops extends Basic
                     $ret = $this->aga->findEndpointGroupByRegion($agaListenerArn, $region);
                     if (!$ret['suc']) {
                         Log::error("Failed to find endpoint group by region from aga, msg: {$ret['msg']}");
-                        $this->unlockOp();
                         return $ret;
                     }
 
@@ -347,7 +344,6 @@ class Lbops extends Basic
                     } catch (\Exception $e) {
                         $errorMessage = "Failed to update endpoint group: {$e->getMessage()}";
                         Log::error($errorMessage);
-                        $this->unlockOp();
                         return [
                             'suc' => false,
                             'msg' => $errorMessage
@@ -362,7 +358,6 @@ class Lbops extends Basic
             $ret = $this->aga->updateTags($version);
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
@@ -370,13 +365,13 @@ class Lbops extends Basic
         $timeUsed = time() - $startTime;
         Log::info("deploy finished, version: {$version}, time used: {$timeUsed}s");
 
-        $this->unlockOp();
+        return ['suc' => true];
     }
 
     /**
      * 清理机器
      *
-     * @return void
+     * @return array
      */
     public function clean($minAliveSeconds = 3600, $exceptIpList = [], $exceptInsidList = [])
     {
@@ -385,6 +380,20 @@ class Lbops extends Basic
             return $ret;
         }
 
+        try {
+            return $this->doClean($minAliveSeconds, $exceptIpList, $exceptInsidList);
+        } finally {
+            $this->unlockOp();
+        }
+    }
+
+    /**
+     * 实际执行清理逻辑
+     *
+     * @return array
+     */
+    protected function doClean($minAliveSeconds, $exceptIpList, $exceptInsidList)
+    {
         Log::info("start clean module `{$this->config['module']}`");
         sleep(5);
 
@@ -593,7 +602,7 @@ class Lbops extends Basic
             }
         }
 
-        $this->unlockOp();
+        return ['suc' => true];
     }
 
     /**
@@ -601,7 +610,7 @@ class Lbops extends Basic
      *
      * @param [type] $region 地区
      * @param integer $amount 服务器数目
-     * @return void
+     * @return array
      */
     function scaleOut($region, $amount = 1)
     {
@@ -647,6 +656,20 @@ class Lbops extends Basic
             return $ret;
         }
 
+        try {
+            return $this->doScaleOut($region, $amount, $currentVersion, $insType);
+        } finally {
+            $this->unlockOp();
+        }
+    }
+
+    /**
+     * 实际执行横向扩容逻辑
+     *
+     * @return array
+     */
+    protected function doScaleOut($region, $amount, $currentVersion, $insType)
+    {
         Log::info("scale out in region:{$region}, version: {$currentVersion}, instance type: {$insType}, amount: {$amount}");
         sleep(5);
 
@@ -656,7 +679,6 @@ class Lbops extends Basic
             //新建机器
             $ret = $this->launchNode($region, $currentVersion, $insType);
             if (!$ret['suc']) {
-                $this->unlockOp();
                 return $ret;
             }
 
@@ -666,7 +688,6 @@ class Lbops extends Basic
         if (!$insList) {
             $errorMessage = "no new instances launched successfully";
             Log::error($errorMessage);
-            $this->unlockOp();
             return [
                 'suc' => false,
                 'msg' => $errorMessage
@@ -676,7 +697,6 @@ class Lbops extends Basic
         //等待app ready
         $ret = $this->waitAppReady(array_column($insList, 'ipv4'));
         if (!$ret['suc']) {
-            $this->unlockOp();
             return $ret;
         }
 
@@ -719,13 +739,11 @@ class Lbops extends Basic
             $ret = $this->route53->addNodes($region, $newIpList);
             if (!$ret['suc']) {
                 Log::error("Failed to add nodes to route53, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
             $ret = $this->route53->updateTags();
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
@@ -734,18 +752,14 @@ class Lbops extends Basic
             $ret = $this->aga->addNodes($region, $newInsIdList);
             if (!$ret['suc']) {
                 Log::error("Failed to add nodes to aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
             $ret = $this->aga->updateTags();
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
-
-        $this->unlockOp();
 
         return [
             'suc' => true,
@@ -757,7 +771,7 @@ class Lbops extends Basic
      *
      * @param [type] $region 地区
      * @param integer $amount 服务器数目
-     * @return void
+     * @return array
      */
     function scaleIn($region, $amount = 1)
     {
@@ -818,19 +832,31 @@ class Lbops extends Basic
             return $ret;
         }
 
+        try {
+            return $this->doScaleIn($region, $nodesList, $removedNodes);
+        } finally {
+            $this->unlockOp();
+        }
+    }
+
+    /**
+     * 实际执行横向缩容逻辑
+     *
+     * @return array
+     */
+    protected function doScaleIn($region, $nodesList, $removedNodes)
+    {
         Log::info("remaining nodes in {$region}: " . json_encode($nodesList, JSON_UNESCAPED_SLASHES));
 
         if ($this->config['r53_zones']) {
             $ret = $this->route53->replaceNodes($region, array_column($nodesList, 'ipv4'));
             if (!$ret['suc']) {
                 Log::error("Failed to replace nodes in route53, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
             $ret = $this->route53->updateTags();
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
@@ -853,7 +879,6 @@ class Lbops extends Basic
                 $ret = $this->aga->listListenerArns($agaArn);
                 if (!$ret['suc']) {
                     Log::error("Failed to list listener arns from aga, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
                 $agaListeners = $ret['data'];
@@ -862,7 +887,6 @@ class Lbops extends Basic
                 $ret = $this->aga->findEndpointGroupByRegion($agaListenerArn, $region);
                 if (!$ret['suc']) {
                     Log::error("Failed to find endpoint group by region from aga, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
                 $epgInfo = $ret['data'];
@@ -875,7 +899,6 @@ class Lbops extends Basic
                 } catch (\Exception $e) {
                     $errorMessage = "Failed to update endpoint group: {$e->getMessage()}";
                     Log::error($errorMessage);
-                    $this->unlockOp();
                     return [
                         'suc' => false,
                         'msg' => $errorMessage,
@@ -889,7 +912,6 @@ class Lbops extends Basic
             $ret = $this->aga->updateTags();
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
@@ -901,12 +923,9 @@ class Lbops extends Basic
             $ret = $this->updateNodeLastChangeTime($region, $node['ins_id'], $lastChangeTime);
             if (!$ret['suc']) {
                 Log::error("Failed to update node last change time, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
-
-        $this->unlockOp();
 
         return [
             'suc' => true,
@@ -918,7 +937,7 @@ class Lbops extends Basic
      *
      * @param [type] $region 地区
      * @param boolean $force 是否强制扩容
-     * @return void
+     * @return array
      */
     function scaleUp($region, $force = false)
     {
@@ -964,27 +983,42 @@ class Lbops extends Basic
             $this->lockOp('scale-up');
         }
 
-        //默认升级到最大的一个类型
-        $targetInsType = end($this->verticalScaleInstypes);
+        try {
+            //默认升级到最大的一个类型
+            $targetInsType = end($this->verticalScaleInstypes);
 
-        //当前instance类型, 没有类型也没关系，用最大的一个
-        $ret = $this->getCurrentInstanceType($region);
-        $insType = $ret['data'] ?? '';
+            //当前instance类型, 没有类型也没关系，用最大的一个
+            $ret = $this->getCurrentInstanceType($region);
+            $insType = $ret['data'] ?? '';
 
-        if ($insType) {
-            $currentKey = array_search($insType, $this->verticalScaleInstypes);
-            if ($currentKey !== false) {
-                $targetKey = $currentKey + 1;
-                $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
-                if (!$targetInsType) {
-                    //到顶了，横向扩容
-                    Log::info("current instance type {$insType} is the largest, scale out");
-                    $this->unlockOp();
-                    return $this->scaleOut($region, $amount);
+            if ($insType) {
+                $currentKey = array_search($insType, $this->verticalScaleInstypes);
+                if ($currentKey !== false) {
+                    $targetKey = $currentKey + 1;
+                    $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
+                    if (!$targetInsType) {
+                        //到顶了，横向扩容 - 注意：scaleOut会自己管理锁，所以先释放当前锁
+                        Log::info("current instance type {$insType} is the largest, scale out");
+                        $this->unlockOp();
+                        return $this->scaleOut($region, $amount);
+                    }
                 }
             }
-        }
 
+            return $this->doScaleUp($region, $amount, $currentVersion, $insType, $targetInsType);
+        } finally {
+            // 注意：如果执行了 scaleOut 分支，锁已经被释放，unlockOp 会安全地什么都不做
+            $this->unlockOp();
+        }
+    }
+
+    /**
+     * 实际执行竖向扩容逻辑
+     *
+     * @return array
+     */
+    protected function doScaleUp($region, $amount, $currentVersion, $insType, $targetInsType)
+    {
         Log::info("### scale up in region:{$region}, amount: {$amount}, version: {$currentVersion}, current instance type: {$insType}, target instance type: {$targetInsType} ###");
 
         //启动新机器
@@ -993,7 +1027,6 @@ class Lbops extends Basic
             $ret = $this->launchNode($region, $currentVersion, $targetInsType);
             if (!$ret['suc']) {
                 Log::error("failed to launch node");
-                $this->unlockOp();
                 return [
                     'suc' => false,
                     'msg' => "failed to launch node"
@@ -1006,7 +1039,6 @@ class Lbops extends Basic
         if (!$insList) {
             $errorMessage = "no new instances launched successfully";
             Log::error($errorMessage);
-            $this->unlockOp();
             return [
                 'suc' => false,
                 'msg' => $errorMessage
@@ -1016,7 +1048,6 @@ class Lbops extends Basic
         //等待app ready
         $ret = $this->waitAppReady(array_column($insList, 'ipv4'));
         if (!$ret['suc']) {
-            $this->unlockOp();
             return [
                 'suc' => false,
                 'msg' => "failed to wait app ready"
@@ -1028,7 +1059,6 @@ class Lbops extends Basic
             $ret = $this->route53->getNodesByRegion($region, true);
             if (!$ret['suc']) {
                 Log::error("Failed to get nodes by region from route53, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
             $r53RegionalNodes = $ret['data'] ?? [];
@@ -1039,7 +1069,6 @@ class Lbops extends Basic
                 $newInsId = $insList[$idx] ?? [];
                 if (!$newInsId || !isset($newInsId['ins_id'])) {
                     Log::error("can not get new instance id according to route53 and inslist, region nodes: " . json_encode($r53RegionalNodes, JSON_UNESCAPED_SLASHES) . ', insList: ' . json_encode($insList, JSON_UNESCAPED_SLASHES) . ', idx: ' . $idx);
-                    $this->unlockOp();
                     return [
                         'suc' => false,
                         'msg' => "can not get new instance id according to route53 and inslist"
@@ -1050,7 +1079,6 @@ class Lbops extends Basic
                 $ret = $this->getAllocateID($region, $oldEIP);
                 if (!$ret['suc']) {
                     Log::error("Failed to get allocate id from EIP {$oldEIP}, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
 
@@ -1059,7 +1087,6 @@ class Lbops extends Basic
                 $ret = $this->associateEIP($region, $newInsId, $allocateId);
                 if (!$ret['suc']) {
                     Log::error("Failed to associate EIP {$oldEIP} with instance {$newInsId}, msg: {$ret['msg']}");
-                    $this->unlockOp();
                     return $ret;
                 }
             }
@@ -1068,7 +1095,6 @@ class Lbops extends Basic
             // $ret = $this->route53->updateTags();
             // if (!$ret['suc']) {
             //     Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
-            //     $this->unlockOp();
             //     return $ret;
             // }
         }
@@ -1078,19 +1104,15 @@ class Lbops extends Basic
             $ret = $this->aga->replaceNodes($region, $insIds);
             if (!$ret['suc']) {
                 Log::error("Failed to replace nodes in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
 
             $ret = $this->aga->updateTags();
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
-
-        $this->unlockOp();
 
         return [
             'suc' => true,
@@ -1101,8 +1123,7 @@ class Lbops extends Basic
      * 竖向缩容（减少机器资源如cpu等）
      *
      * @param [type] $region 地区
-     * @param integer $amount 服务器数目
-     * @return void
+     * @return array
      */
     function scaleDown($region)
     {
@@ -1174,7 +1195,7 @@ class Lbops extends Basic
         $targetKey = $currentKey - 1;
         $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
         if (!$targetInsType) {
-            //到底了，横向缩容
+            //到底了，横向缩容 - scaleIn 会自己管理锁
             $minNodeCount = $this->config['region_min_nodes_amount'][$region] ?? 1;
             if ($amount > $minNodeCount) {
                 Log::info("current instance type {$insType} is the smallest, current nodes amount: {$amount}, scale in");
@@ -1193,6 +1214,20 @@ class Lbops extends Basic
             return $ret;
         }
 
+        try {
+            return $this->doScaleDown($region, $amount, $currentVersion, $insType, $targetInsType);
+        } finally {
+            $this->unlockOp();
+        }
+    }
+
+    /**
+     * 实际执行竖向缩容逻辑
+     *
+     * @return array
+     */
+    protected function doScaleDown($region, $amount, $currentVersion, $insType, $targetInsType)
+    {
         Log::info("### scale down in region:{$region}, amount: {$amount}, version: {$currentVersion}, current instance type: {$insType}, target instance type: {$targetInsType} ###");
 
         //启动新机器
@@ -1201,7 +1236,6 @@ class Lbops extends Basic
             $ret = $this->launchNode($region, $currentVersion, $targetInsType);
             if (!$ret['suc']) {
                 Log::error("failed to launch node");
-                $this->unlockOp();
                 return [
                     'suc' => false,
                     'msg' => "failed to launch node"
@@ -1214,7 +1248,6 @@ class Lbops extends Basic
         if (!$insList) {
             $errorMessage = "no new instances launched successfully";
             Log::error($errorMessage);
-            $this->unlockOp();
             return [
                 'suc' => false,
                 'msg' => $errorMessage
@@ -1224,7 +1257,6 @@ class Lbops extends Basic
         //等待app ready
         $ret = $this->waitAppReady(array_column($insList, 'ipv4'));
         if (!$ret['suc']) {
-            $this->unlockOp();
             return $ret;
         }
 
@@ -1233,7 +1265,6 @@ class Lbops extends Basic
             $ret = $this->route53->getNodesByRegion($region, true);
             if (!$ret['suc']) {
                 Log::error("Failed to get nodes by region from route53, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
             $r53RegionalNodes = $ret['data'] ?? [];
@@ -1245,7 +1276,6 @@ class Lbops extends Basic
                 if (!$newInsId || !isset($newInsId['ins_id'])) {
                     $errorMessage = "can not get new instance id according to route53 and inslist, region nodes: " . json_encode($r53RegionalNodes, JSON_UNESCAPED_SLASHES) . ', insList: ' . json_encode($insList, JSON_UNESCAPED_SLASHES) . ', idx: ' . $idx;
                     Log::error($errorMessage);
-                    $this->unlockOp();
                     return [
                         'suc' => false,
                         'msg' => $errorMessage
@@ -1257,7 +1287,6 @@ class Lbops extends Basic
                 if (!$ret['suc']) {
                     $errorMessage = "Failed to get allocate id from EIP {$oldEIP}";
                     Log::error($errorMessage);
-                    $this->unlockOp();
                     return [
                         'suc' => false,
                         'msg' => $errorMessage
@@ -1270,7 +1299,6 @@ class Lbops extends Basic
                 if (!$ret['suc']) {
                     $errorMessage = "Failed to associate EIP {$oldEIP} with instance {$newInsId}";
                     Log::error($errorMessage);
-                    $this->unlockOp();
                     return [
                         'suc' => false,
                         'msg' => $errorMessage
@@ -1282,7 +1310,6 @@ class Lbops extends Basic
             // $ret = $this->route53->updateTags();
             // if (!$ret['suc']) {
             //     Log::error("Failed to update tags in route53, msg: {$ret['msg']}");
-            //     $this->unlockOp();
             //     return $ret;
             // }
         }
@@ -1292,19 +1319,15 @@ class Lbops extends Basic
             $ret = $this->aga->replaceNodes($region, $insIds);
             if (!$ret['suc']) {
                 Log::error("Failed to replace nodes in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
 
             $ret = $this->aga->updateTags();
             if (!$ret['suc']) {
                 Log::error("Failed to update tags in aga, msg: {$ret['msg']}");
-                $this->unlockOp();
                 return $ret;
             }
         }
-
-        $this->unlockOp();
 
         return [
             'suc' => true,

@@ -43,6 +43,20 @@ class Basic
     public $opLockFile;
 
     /**
+     * Lock file handle for flock
+     *
+     * @var resource|null
+     */
+    protected $lockFileHandle = null;
+
+    /**
+     * Current lock holder operation name
+     *
+     * @var string|null
+     */
+    protected $currentLockOp = null;
+
+    /**
      * Undocumented function
      *
      * @param [type] $config
@@ -1041,22 +1055,59 @@ STRING;
     }
 
     /**
-     * Undocumented function
+     * Check if operation is locked by another process
      *
-     * @return boolean
+     * @param string $currentOp Current operation name for logging
+     * @return array ['locked' => bool, 'msg' => string]
      */
     public function opLocked($currentOp = '')
     {
-        if (file_exists($this->config['op_lock_file']) && file_get_contents($this->config['op_lock_file']) != 'n') {
-            $errorMessage = "trying {$currentOp} but lbops has been locked by another operation: " . file_get_contents($this->config['op_lock_file']) . ", skip";
+        // If we already hold the lock, check if it's for a different operation
+        if ($this->lockFileHandle !== null && $this->currentLockOp !== null) {
+            if ($this->currentLockOp !== $currentOp) {
+                $errorMessage = "trying {$currentOp} but lbops has been locked by current process operation: {$this->currentLockOp}, skip";
+                Log::info($errorMessage);
+                return [
+                    'locked' => true,
+                    'msg' => $errorMessage
+                ];
+            }
+            // Same operation already holds the lock
+            return [
+                'locked' => false,
+                'msg' => "lbops is locked by current operation"
+            ];
+        }
 
+        // Try to acquire lock non-blocking to check if locked
+        $lockFile = $this->config['op_lock_file'];
+        $fp = @fopen($lockFile, 'c+');
+        if (!$fp) {
+            $errorMessage = "trying {$currentOp} but failed to open lock file: {$lockFile}";
             Log::info($errorMessage);
-
             return [
                 'locked' => true,
                 'msg' => $errorMessage
             ];
         }
+
+        // Try non-blocking lock to check status
+        if (!flock($fp, LOCK_EX | LOCK_NB)) {
+            // Lock is held by another process, read who holds it
+            $lockedBy = trim(fread($fp, 1024)) ?: 'unknown';
+            fclose($fp);
+
+            $errorMessage = "trying {$currentOp} but lbops has been locked by another operation: {$lockedBy}, skip";
+            Log::info($errorMessage);
+            return [
+                'locked' => true,
+                'msg' => $errorMessage
+            ];
+        }
+
+        // We got the lock just for checking, release it
+        flock($fp, LOCK_UN);
+        fclose($fp);
 
         return [
             'locked' => false,
@@ -1065,63 +1116,128 @@ STRING;
     }
 
     /**
-     * lock operation
+     * Acquire operation lock atomically using flock
+     * This is atomic - no race condition between check and lock
      *
-     * @return void
+     * @param string $lockedBy Operation name that is acquiring the lock
+     * @return array ['suc' => bool, 'msg' => string]
      */
     public function lockOp($lockedBy = "common")
     {
-        $ret = file_put_contents($this->config['op_lock_file'], $lockedBy);
-        if ($ret === false) {
+        // If we already hold a lock, don't try to acquire again
+        if ($this->lockFileHandle !== null) {
+            if ($this->currentLockOp === $lockedBy) {
+                return ['suc' => true];
+            }
             return [
                 'suc' => false,
-                'msg' => "failed to lock operation"
+                'msg' => "already holding lock for operation: {$this->currentLockOp}"
             ];
         }
 
-        return [
-            'suc' => true
-        ];
+        $lockFile = $this->config['op_lock_file'];
+
+        // Open file for read/write, create if not exists
+        $fp = @fopen($lockFile, 'c+');
+        if (!$fp) {
+            $errorMessage = "failed to open lock file: {$lockFile}";
+            Log::error($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage
+            ];
+        }
+
+        // Try to acquire exclusive lock (non-blocking)
+        if (!flock($fp, LOCK_EX | LOCK_NB)) {
+            // Lock is held by another process
+            $lockedByOther = trim(fread($fp, 1024)) ?: 'unknown';
+            fclose($fp);
+
+            $errorMessage = "failed to acquire lock, already locked by: {$lockedByOther}";
+            Log::info($errorMessage);
+            return [
+                'suc' => false,
+                'msg' => $errorMessage
+            ];
+        }
+
+        // Lock acquired! Write the operation name to file
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, $lockedBy);
+        fflush($fp);
+
+        // Store the handle to keep the lock
+        $this->lockFileHandle = $fp;
+        $this->currentLockOp = $lockedBy;
+
+        Log::info("lock acquired for operation: {$lockedBy}");
+
+        return ['suc' => true];
     }
 
     /**
-     * unlock operation
+     * Release operation lock
      *
      * @return void
      */
     public function unlockOp()
     {
-        file_put_contents($this->config['op_lock_file'], 'n');
+        if ($this->lockFileHandle !== null) {
+            // Write 'n' to indicate unlocked state (for backwards compatibility)
+            ftruncate($this->lockFileHandle, 0);
+            rewind($this->lockFileHandle);
+            fwrite($this->lockFileHandle, 'n');
+            fflush($this->lockFileHandle);
+
+            // Release the lock
+            flock($this->lockFileHandle, LOCK_UN);
+            fclose($this->lockFileHandle);
+
+            $prevOp = $this->currentLockOp;
+            $this->lockFileHandle = null;
+            $this->currentLockOp = null;
+
+            Log::info("lock released for operation: {$prevOp}");
+        }
     }
 
     /**
-     * 确定是否由特定的操作来lock
+     * Check if lock is held by specific operation (current process only)
      *
-     * @param [type] $op
-     * @return void
+     * @param string $op Operation name to check
+     * @return array ['suc' => bool, 'msg' => string]
      */
     public function opLockedBy($op)
     {
-        $lockedBy = null;
-        $attempts = 0;
-        do {
-            if (file_exists($this->config['op_lock_file'])) {
-                $lockedBy = file_get_contents($this->config['op_lock_file']);
+        // With flock, if we hold the lock, we know we're the owner
+        if ($this->lockFileHandle !== null && $this->currentLockOp === $op) {
+            return ['suc' => true];
+        }
+
+        // Check if the lock file indicates this operation
+        $lockFile = $this->config['op_lock_file'];
+        if (file_exists($lockFile)) {
+            $lockedBy = trim(file_get_contents($lockFile));
+            if ($lockedBy === $op) {
+                // File says this op, but we don't hold the handle
+                // This could mean another process with same op name
+                return ['suc' => true];
             }
-
-            $attempts++;
-            sleep(1);
-        } while ($lockedBy == $op && $attempts <= 5);
-
-        if ($lockedBy == $op) {
-            return [
-                'suc' => true
-            ];
         }
 
         return [
             'suc' => false,
-            'msg' => "locked by another operation when double check lock file: {$lockedBy}"
+            'msg' => "not locked by operation: {$op}"
         ];
+    }
+
+    /**
+     * Destructor to ensure lock is released
+     */
+    public function __destruct()
+    {
+        $this->unlockOp();
     }
 }
