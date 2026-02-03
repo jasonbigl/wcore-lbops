@@ -2044,6 +2044,10 @@ STRING;
                     $this->sendAlarmEmail('Low cpu load, scale down failed', $content);
                 } else {
                     //缩容成功
+                    if ($ret['msg'] == 'NO_NEED_TO_SCALE_SMALL') {
+                        Log::info("Scale down succeeded, but no need to scale small, time used: {$usedTime}s");
+                        return;
+                    }
 
                     //记录时间
                     file_put_contents($scaleSmallTimestampFile, time());
@@ -2168,6 +2172,11 @@ STRING;
                 if (!$ret['suc']) {
                     return $ret;
                 }
+            } else {
+                return [
+                    'suc' => true,
+                    'msg' => 'NO_NEED_TO_SCALE_SMALL',
+                ];
             }
         }
 
