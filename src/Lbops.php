@@ -48,7 +48,7 @@ class Lbops extends Basic
      *
      * @return array
      */
-    public function deploy($version, $allocateNewEIP = false, $targetRegion = null, $insType = null)
+    public function deploy($version, $allocateNewEIP = false, $targetRegion = null, $insType = null, $startupEnv = '')
     {
         $ret = $this->canDoOp('deploy');
         if (!$ret['suc']) {
@@ -56,7 +56,7 @@ class Lbops extends Basic
         }
 
         try {
-            return $this->doDeploy($version, $allocateNewEIP, $targetRegion, $insType);
+            return $this->doDeploy($version, $allocateNewEIP, $targetRegion, $insType, $startupEnv);
         } finally {
             $this->unlockOp();
         }
@@ -67,7 +67,7 @@ class Lbops extends Basic
      *
      * @return array
      */
-    protected function doDeploy($version, $allocateNewEIP, $targetRegion, $insType)
+    protected function doDeploy($version, $allocateNewEIP, $targetRegion, $insType, $startupEnv = '')
     {
         $startTime = time();
 
@@ -119,7 +119,7 @@ class Lbops extends Basic
                 Log::info("start launching #{$i} server in {$region}");
 
                 //部署并等待app完成
-                $ret = $this->launchNode($region, $version, $insType);
+                $ret = $this->launchNode($region, $version, $insType, $startupEnv);
                 if (!$ret['suc']) {
                     return $ret;
                 }
