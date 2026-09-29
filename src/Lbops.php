@@ -942,9 +942,10 @@ class Lbops extends Basic
      *
      * @param [type] $region 地区
      * @param boolean $ignoreLock 是否强制扩容
+     * @param boolean $sameTypeAtMax 机型已到阶梯顶时是否退化为同机型原地重建（monitor 替换坏机器用），否则到顶报错
      * @return array
      */
-    function scaleUp($region, $ignoreLock = false)
+    function scaleUp($region, $ignoreLock = false, $sameTypeAtMax = false)
     {
         //当前版本
         $ret = $this->getCurrentVersion();
@@ -984,8 +985,11 @@ class Lbops extends Basic
                 return $ret;
             }
         } else {
-            //强制升级，不看锁，但是要锁住自身
-            $this->lockOp('scale-up');
+            //强制升级，不看锁，但是要锁住自身；锁被别的操作（deploy、上一轮 monitor）占着就不能并发干活
+            $ret = $this->lockOp('scale-up');
+            if (!$ret['suc']) {
+                return $ret;
+            }
         }
 
         try {
@@ -1001,7 +1005,11 @@ class Lbops extends Basic
                 if ($currentKey !== false) {
                     $targetKey = $currentKey + 1;
                     $targetInsType = $this->verticalScaleInstypes[$targetKey] ?? null;
-                    if (!$targetInsType) {
+                    if (!$targetInsType && $sameTypeAtMax) {
+                        //到顶了，用当前机型原地重建（开新机、挪 EIP、换 AGA 端点的流程与升级相同）
+                        $targetInsType = $insType;
+                        Log::info("current instance type {$insType} is the largest, rebuild with the same type");
+                    } else if (!$targetInsType) {
                         //到顶了
                         $errorMessage = "current instance type {$insType} is the largest, unable to scale up";
                         Log::error($errorMessage);
@@ -1400,7 +1408,7 @@ class Lbops extends Basic
                 }, $unhealthyNodes);
 
                 //直接升级 (强制，不看锁)
-                $ret = $this->scaleUp($region, true);
+                $ret = $this->scaleUp($region, true, true);
                 if (!$ret['suc']) {
                     //扩容失败
                     Log::error("Failed to scale up in {$region}, msg: {$ret['msg']}");
