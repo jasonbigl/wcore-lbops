@@ -1455,7 +1455,8 @@ class Lbops extends Basic
         $totalNodes = count($allNodesFlat);
 
         //一次并行检测5个，避免一次检测太多造成ssl connection timeout，导致检测失败，实际node是健康的
-        $allNodesFlatChunks = array_chunk($allNodesFlat, 5);
+        //保留 region|ip 键：检查结果按键回写 $allNodesFlat，键丢了会写到不存在的条目上，节点、区域全空
+        $allNodesFlatChunks = array_chunk($allNodesFlat, 5, true);
 
         Log::info("Starting fully concurrent health check for {$totalNodes} nodes across " . count($regionNodes) . " regions, chunks: " . count($allNodesFlatChunks) . ". chunk size: " . count($allNodesFlatChunks[0]));
 
@@ -1466,10 +1467,10 @@ class Lbops extends Basic
             for ($round = 0; $round < $maxCheckAttempts; $round++) {
                 $startRoundTime = time();
 
-                // 只检查还未被判定为不健康的节点
-                $activeNodes = array_filter($chunkNodes, function ($status) {
-                    return !$status['isUnhealthy'];
-                });
+                // 只检查还未被判定为不健康的节点（状态更新在 $allNodesFlat 上，$chunkNodes 只是分块时的副本）
+                $activeNodes = array_filter($chunkNodes, function ($nodeKey) use ($allNodesFlat) {
+                    return !$allNodesFlat[$nodeKey]['isUnhealthy'];
+                }, ARRAY_FILTER_USE_KEY);
 
                 if (empty($activeNodes)) {
                     break; // 所有节点都已经被判定
@@ -1650,6 +1651,10 @@ class Lbops extends Basic
             }
         } while ($running > 0 && $status === CURLM_OK);
 
+        // 取完完成消息，multi 句柄的结果（超时等）才会写回 easy 句柄，否则 curl_errno / curl_error 一直是 0 和空串
+        while (curl_multi_info_read($multiHandle) !== false) {
+        }
+
         // 收集结果
         foreach ($curlHandles as $nodeKey => $handleItem) {
             $ch = $handleItem['ch'];
@@ -1723,6 +1728,10 @@ class Lbops extends Basic
             curl_multi_exec($multiHandle, $running);
             curl_multi_select($multiHandle, 0.1); // 100ms 超时
         } while ($running > 0);
+
+        // 取完完成消息，multi 句柄的结果（超时等）才会写回 easy 句柄，否则 curl_errno / curl_error 一直是 0 和空串
+        while (curl_multi_info_read($multiHandle) !== false) {
+        }
 
         // 收集结果
         foreach ($curlHandles as $nodeIp => $ch) {
