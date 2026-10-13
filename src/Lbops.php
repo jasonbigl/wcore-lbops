@@ -2063,18 +2063,17 @@ STRING;
                     //缩容成功
                     if ($ret['msg'] == 'NO_NEED_TO_SCALE_SMALL') {
                         Log::info("Scale down succeeded, but no need to scale small, time used: {$usedTime}s");
-                        return;
-                    }
+                    } else {
+                        //记录时间
+                        file_put_contents($scaleSmallTimestampFile, time());
 
-                    //记录时间
-                    file_put_contents($scaleSmallTimestampFile, time());
-
-                    Log::info("Scale down succeeded, time used: {$usedTime}s");
-                    $content = <<<STRING
+                        Log::info("Scale down succeeded, time used: {$usedTime}s");
+                        $content = <<<STRING
 <p><strong>nodes in {$region} is on low load, current avg. cpu {$currentCPUAvg}%</strong><p>
 <p>Scale down succeeded, time used: {$usedTime}s<p>
 STRING;
-                    $this->sendAlarmEmail('Low cpu load, scale down succeeded', $content);
+                        $this->sendAlarmEmail('Low cpu load, scale down succeeded', $content);
+                    }
                 }
             }
         }
